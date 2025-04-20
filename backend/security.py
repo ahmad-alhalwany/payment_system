@@ -1,5 +1,5 @@
 from passlib.context import CryptContext
-from jose import jwt, JWTError
+from jose import jwt
 
 SECRET_KEY = "929b15e43fd8f1cf4df79d86eb93ca426ab58ae53386c7a91ac4adb45832773b"
 ALGORITHM = "HS256"
