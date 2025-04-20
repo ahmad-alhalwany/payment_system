@@ -4,3 +4,4 @@ sqlalchemy
 pandas
 python-multipart
 passlib
+jose
