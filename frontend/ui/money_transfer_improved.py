@@ -3,81 +3,22 @@ import requests
 from datetime import datetime
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
-    QPushButton, QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView,
-    QMessageBox, QDialog, QLineEdit, QFormLayout, QComboBox, QGroupBox,
-    QGridLayout, QDateEdit, QDoubleSpinBox, QCheckBox, QMenu,
-    QTextEdit,  QDialogButtonBox
+    QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView,
+    QMessageBox, QDialog, QLineEdit, QFormLayout, QComboBox,
+    QCheckBox, QMenu, QDialogButtonBox, QPushButton, QStatusBar
 )
 import os
 from PyQt6.QtGui import QFont, QColor, QAction
-from PyQt6.QtCore import Qt, QDate, pyqtSignal, QTimer
-from PyQt6.QtPrintSupport import QPrinter, QPrintDialog
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QDate
 from datetime import datetime
 from ui.user_search import UserSearchDialog
-from ui.confirm_dialog import ConfirmTransactionDialog
-from ui.arabic_amount import number_to_arabic_words
+from ui.custom_widgets import ModernGroupBox, ModernButton
+from utils.helpers import get_status_arabic, get_status_color
+from money_transfer.receipt_printer import ReceiptPrinter
+from money_transfer.transaction_details import TransactionDetailsDialog
+from money_transfer.transfers import TransferCore
 
-class ModernGroupBox(QGroupBox):
-    """Custom styled group box."""
-    
-    def __init__(self, title, color="#3498db"):
-        super().__init__(title)
-        self.setStyleSheet(f"""
-            QGroupBox {{
-                font-weight: bold;
-                border: 1px solid {color};
-                border-radius: 5px;
-                margin-top: 1em;
-                padding-top: 10px;
-            }}
-            QGroupBox::title {{
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 5px 0 5px;
-                color: {color};
-            }}
-        """)
-
-class ModernButton(QPushButton):
-    """Custom styled button."""
-    
-    def __init__(self, text, color="#3498db"):
-        super().__init__(text)
-        self.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {color};
-                color: white;
-                border-radius: 5px;
-                padding: 8px;
-                font-weight: bold;
-            }}
-            QPushButton:hover {{
-                background-color: {self.lighten_color(color)};
-            }}
-            QPushButton:pressed {{
-                background-color: {self.darken_color(color)};
-            }}
-        """)
-    
-    def lighten_color(self, color):
-        """Lighten a hex color."""
-        if color.startswith('#'):
-            color = color[1:]
-        r = min(255, int(color[0:2], 16) + 20)
-        g = min(255, int(color[2:4], 16) + 20)
-        b = min(255, int(color[4:6], 16) + 20)
-        return f"#{r:02x}{g:02x}{b:02x}"
-    
-    def darken_color(self, color):
-        """Darken a hex color."""
-        if color.startswith('#'):
-            color = color[1:]
-        r = max(0, int(color[0:2], 16) - 20)
-        g = max(0, int(color[2:4], 16) - 20)
-        b = max(0, int(color[4:6], 16) - 20)
-        return f"#{r:02x}{g:02x}{b:02x}"
-
-class MoneyTransferApp(QWidget):
+class MoneyTransferApp(QWidget, ReceiptPrinter, TransferCore):
     """Money Transfer Application for the Internal Payment System."""
     transferCompleted = pyqtSignal()
     logoutRequested = pyqtSignal()
@@ -117,7 +58,12 @@ class MoneyTransferApp(QWidget):
         self.refresh_timer = QTimer(self)
         self.refresh_timer.timeout.connect(self.refresh_data)
         self.refresh_timer.start(30000)  # Refresh every 30 seconds
-    
+        
+        # Set up branch refresh timer
+        self.branch_timer = QTimer()
+        self.branch_timer.timeout.connect(self.refresh_branches)
+        self.branch_timer.start(30000)  # Refresh every 5 seconds
+        
     def setup_ui(self):
         """Set up the UI components."""
         layout = QVBoxLayout()
@@ -478,9 +424,9 @@ class MoneyTransferApp(QWidget):
             
             # Status
             status = transaction.get("status", "pending")
-            status_arabic = self.get_status_arabic(status)
+            status_arabic = get_status_arabic(status)
             status_item = QTableWidgetItem(status_arabic)
-            status_item.setBackground(self.get_status_color(status))
+            status_item.setBackground(get_status_color(status))
             self.received_table.setItem(i, 7, status_item)
             
             # Column 8: Type indicator
@@ -760,310 +706,6 @@ class MoneyTransferApp(QWidget):
                 "خطأ في الاتصال",
                 f"تعذر الاتصال بالخادم:\n{str(e)}"
             )
-            
-    def print_receipt(self, transaction_data):
-        """Print the receipt for a received transaction."""
-        # Create print dialog
-        print_dialog = QDialog(self)
-        print_dialog.setWindowTitle("طباعة إيصال الاستلام")
-        print_dialog.setFixedSize(400, 600)
-        
-        layout = QVBoxLayout()
-        
-        # Create printable content
-        content = QTextEdit()
-        content.setReadOnly(True)
-        content.setHtml(f"""
-            <div style='text-align: center; font-family: Arial;'>
-                <h1 style='color: #2c3e50;'>إيصال استلام أموال</h1>
-                <hr>
-                <div style='text-align: right;'>
-                    <p><b>رقم التحويل:</b> {transaction_data['id']}</p>
-                    <p><b>تاريخ التحويل:</b> {transaction_data['date']}</p>
-                    <p><b>تاريخ الاستلام:</b> {transaction_data['received_at']}</p>
-                    <h3 style='color: #e74c3c;'>المرسل:</h3>
-                    <p>{transaction_data['sender']}</p>
-                    <p>الفرع: {transaction_data['sending_branch']}</p>
-                    <h3 style='color: #3498db;'>المستلم:</h3>
-                    <p>{transaction_data['receiver']}</p>
-                    <p>الهاتف: {transaction_data['receiver_mobile']}</p>
-                    <p>الهوية: {transaction_data['receiver_id']}</p>
-                    <p>العنوان: {transaction_data['receiver_address']}</p>
-                    <p>المحافظة: {transaction_data['receiver_governorate']}</p>
-                    <p><b>المبلغ:</b> {transaction_data['amount']} {transaction_data['currency']}</p>
-                    <p><b>تم الاستلام بواسطة:</b> {transaction_data['received_by']}</p>
-                    <p><b>الفرع المستلم:</b> {transaction_data['destination_branch']}</p>
-                    <hr>
-                    <p style='color: #95a5a6;'>شكراً لاستخدامكم خدماتنا</p>
-                    <p style='color: #95a5a6;'>هذا الإيصال يؤكد استلام الأموال</p>
-                    <p style='color: #95a5a6;'>التوقيع: ________________________</p>
-                </div>
-            </div>
-        """)
-        
-        # Print button
-        print_btn = ModernButton("طباعة", color="#27ae60")
-        print_btn.clicked.connect(lambda: self.send_to_printer(content))
-        
-        layout.addWidget(content)
-        layout.addWidget(print_btn)
-        print_dialog.setLayout(layout)
-        print_dialog.exec()         
-    
-    def print_received_transaction(self, item=None):
-        """Print received transaction receipt."""
-        if item is None or isinstance(item, bool):
-            # Called from button, get selected row
-            selected_items = self.received_table.selectedItems()
-            if not selected_items:
-                QMessageBox.warning(self, "تحذير", "الرجاء تحديد تحويل لطباعته")
-                return
-            row = selected_items[0].row()
-        else:
-            # Called from double-click
-            row = item.row()
-        
-        transaction_id = self.received_table.item(row, 0).text()
-        sending_branch = self.received_table.item(row, 10).text()  # Changed from 9 to 10
-        dest_branch = self.received_table.item(row, 11).text()     # Changed from 10 to 11
-        received_status = self.received_table.item(row, 13).text() # Changed from 12 to 13
-        status = self.received_table.item(row, 7).text()
-        
-        # Check if the transfer is confirmed before allowing printing
-        if status != "مكتمل":
-            QMessageBox.warning(self, "تحذير", "لا يمكن طباعة الإيصال للتحويلات غير المؤكدة")
-            return
-        
-        # Get all transaction details from the table
-        transaction_data = {
-            "id": transaction_id,
-            "date": self.received_table.item(row, 1).text(),
-            "sender": self.received_table.item(row, 2).text(),
-            "receiver": self.received_table.item(row, 3).text(),
-            "amount": self.received_table.item(row, 4).text(),
-            "currency": self.received_table.item(row, 5).text(),
-            "receiver_governorate": self.received_table.item(row, 6).text(),
-            "status": status,
-            "employee_name": self.received_table.item(row, 9).text(),
-            "sending_branch": sending_branch,
-            "destination_branch": dest_branch,
-            "branch_governorate": self.received_table.item(row, 12).text(),
-            "received_status": received_status,
-            "received_by": self.full_name,
-            "received_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        }
-        
-        # Format transaction ID with dashes like in the image (1925-5814-5221)
-        # If the ID is numeric, format it with dashes
-        formatted_id = transaction_data['id']
-        if transaction_data['id'].isdigit() and len(transaction_data['id']) >= 4:
-            id_parts = []
-            id_str = transaction_data['id']
-            while id_str:
-                if len(id_str) > 4:
-                    id_parts.append(id_str[:4])
-                    id_str = id_str[4:]
-                else:
-                    id_parts.append(id_str)
-                    id_str = ""
-            formatted_id = "-".join(id_parts)
-        
-        # Convert amount to Arabic words
-        amount_in_arabic = number_to_arabic_words(transaction_data['amount'], transaction_data['currency'])
-        
-        # Create print dialog
-        print_dialog = QDialog(self)
-        print_dialog.setWindowTitle("طباعة التحويل")
-        print_dialog.setFixedSize(600, 700)
-        
-        layout = QVBoxLayout()
-        
-        # Create printable content with improved layout
-        content = QTextEdit()
-        content.setReadOnly(True)
-        content.setHtml(f"""
-            <div style='font-family: Arial; direction: rtl; background-color: #f9f9f9; padding: 0; margin: 0;'>
-                <!-- Header -->
-                <div style='text-align: right; padding: 10px; background-color: #e8f5e9; border-bottom: 1px solid #ddd;'>
-                    <h2 style='margin: 0; color: #333;'>طباعة التحويل</h2>
-                </div>
-                
-                <!-- Transaction Number Row -->
-                <div style='margin: 15px 0; text-align: center;'>
-                    <div style='display: flex; justify-content: space-between; align-items: center;'>
-                        <div style='flex: 1; text-align: right;'>
-                            <strong style='color: #333;'>الرقم</strong>
-                        </div>
-                        <div style='flex: 3; text-align: center;'>
-                            <strong style='font-size: 16px;'>{formatted_id}</strong>
-                        </div>
-                        <div style='flex: 1; text-align: center; background-color: #e8f5e9; padding: 5px; border-radius: 4px;'>
-                            <strong style='color: #2e7d32;'>تسليم</strong>
-                        </div>
-                    </div>
-                </div>
-                
-                <!-- Main Content -->
-                <div style='margin: 0 10px;'>
-                    <!-- From/To Row -->
-                    <div style='display: flex; justify-content: space-between; margin-bottom: 8px; border-bottom: 1px solid #eee; padding-bottom: 8px;'>
-                        <div style='flex: 1; text-align: right;'>
-                            <strong style='color: #555;'>من</strong>
-                        </div>
-                        <div style='flex: 5; text-align: left;'>
-                            {transaction_data['sending_branch']}
-                        </div>
-                    </div>
-                    
-                    <div style='display: flex; justify-content: space-between; margin-bottom: 8px; border-bottom: 1px solid #eee; padding-bottom: 8px;'>
-                        <div style='flex: 1; text-align: right;'>
-                            <strong style='color: #555;'>إلى</strong>
-                        </div>
-                        <div style='flex: 5; text-align: left;'>
-                            {transaction_data['destination_branch']}
-                        </div>
-                    </div>
-                    
-                    <!-- Sender Row -->
-                    <div style='display: flex; justify-content: space-between; margin-bottom: 8px; border-bottom: 1px solid #eee; padding-bottom: 8px;'>
-                        <div style='flex: 1; text-align: right;'>
-                            <strong style='color: #555;'>المرسل</strong>
-                        </div>
-                        <div style='flex: 5; text-align: left;'>
-                            {transaction_data['sender']}
-                        </div>
-                    </div>
-                    
-                    <!-- Receiver Row -->
-                    <div style='display: flex; justify-content: space-between; margin-bottom: 8px; border-bottom: 1px solid #eee; padding-bottom: 8px;'>
-                        <div style='flex: 1; text-align: right;'>
-                            <strong style='color: #555;'>المفوض</strong>
-                        </div>
-                        <div style='flex: 5; text-align: left;'>
-                            {transaction_data['receiver']}
-                        </div>
-                    </div>
-                    
-                    <!-- Contact Row -->
-                    <div style='display: flex; justify-content: space-between; margin-bottom: 8px; border-bottom: 1px solid #eee; padding-bottom: 8px;'>
-                        <div style='flex: 1; text-align: right;'>
-                            <strong style='color: #555;'>اتصال</strong>
-                        </div>
-                        <div style='flex: 5; text-align: left;'>
-                            {transaction_data.get('receiver_mobile', '')}
-                        </div>
-                    </div>
-                    
-                    <!-- Beneficiary Row -->
-                    <div style='display: flex; justify-content: space-between; margin-bottom: 8px; border-bottom: 1px solid #eee; padding-bottom: 8px;'>
-                        <div style='flex: 1; text-align: right;'>
-                            <strong style='color: #555;'>المستفيد</strong>
-                        </div>
-                        <div style='flex: 5; text-align: left;'>
-                            {transaction_data['receiver']}
-                        </div>
-                    </div>
-                    
-                    <!-- Recipient Row -->
-                    <div style='display: flex; justify-content: space-between; margin-bottom: 8px; border-bottom: 1px solid #eee; padding-bottom: 8px;'>
-                        <div style='flex: 1; text-align: right;'>
-                            <strong style='color: #555;'>المستلم</strong>
-                        </div>
-                        <div style='flex: 5; text-align: left;'>
-                            {transaction_data['receiver']}
-                        </div>
-                    </div>
-                    
-                    <!-- Contact (Phone) Row -->
-                    <div style='display: flex; justify-content: space-between; margin-bottom: 8px; border-bottom: 1px solid #eee; padding-bottom: 8px;'>
-                        <div style='flex: 1; text-align: right;'>
-                            <strong style='color: #555;'>اتصال</strong>
-                        </div>
-                        <div style='flex: 5; text-align: left;'>
-                            {transaction_data.get('receiver_mobile', '')}
-                        </div>
-                    </div>
-                    
-                    <!-- Date Row -->
-                    <div style='display: flex; justify-content: space-between; margin-bottom: 8px; border-bottom: 1px solid #eee; padding-bottom: 8px;'>
-                        <div style='flex: 1; text-align: right;'>
-                            <strong style='color: #555;'>التاريخ</strong>
-                        </div>
-                        <div style='flex: 5; text-align: left;'>
-                            {transaction_data['date']}
-                        </div>
-                    </div>
-                    
-                    <!-- Amount Row -->
-                    <div style='display: flex; justify-content: space-between; margin-bottom: 8px; border-bottom: 1px solid #eee; padding-bottom: 8px;'>
-                        <div style='flex: 1; text-align: right;'>
-                            <strong style='color: #555;'>المبلغ</strong>
-                        </div>
-                        <div style='flex: 5; text-align: left;'>
-                            {transaction_data['amount']} {transaction_data['currency']}
-                        </div>
-                    </div>
-                    
-                    <!-- Amount in Words Row -->
-                    <div style='margin-bottom: 15px; padding: 8px; background-color: #f5f5f5; border-radius: 4px;'>
-                        <p style='margin: 0; text-align: right; color: #333;'>
-                            {amount_in_arabic}
-                        </p>
-                    </div>
-                </div>
-                
-                <!-- Footer Note -->
-                <div style='margin: 15px 0; text-align: center; color: #4CAF50; font-weight: bold;'>
-                    <p>يطلب تبليغ المستفيد برقم الحوالة</p>
-                </div>
-                
-                <!-- System Section -->
-                <hr style='border: none; border-top: 1px solid #ddd; margin: 20px 0;'>
-                
-                <div style='text-align: right; margin: 0 10px;'>
-                    <h3 style='color: #4CAF50; margin-bottom: 15px;'>نسخة النظام</h3>
-                    
-                    <div style='margin-bottom: 8px;'>
-                        <strong style='color: #555;'>بيانات فرع المرسل:</strong>
-                        <span style='margin-right: 10px;'>{transaction_data['sending_branch']}</span>
-                    </div>
-                    
-                    <div style='margin-bottom: 8px;'>
-                        <strong style='color: #555;'>بيانات فرع المستلم:</strong>
-                        <span style='margin-right: 10px;'>{transaction_data['destination_branch']} - {transaction_data['branch_governorate']}</span>
-                    </div>
-                    
-                    <div style='margin-bottom: 8px;'>
-                        <strong style='color: #555;'>اسم الموظف:</strong>
-                        <span style='margin-right: 10px;'>{transaction_data['employee_name']}</span>
-                    </div>
-                    
-                    <div style='margin-bottom: 8px;'>
-                        <strong style='color: #555;'>نوع التحويل:</strong>
-                        <span style='margin-right: 10px;'>تحويل وارد</span>
-                    </div>
-                    
-                    <div style='margin-bottom: 8px;'>
-                        <strong style='color: #555;'>حالة التحويل:</strong>
-                        <span style='margin-right: 10px;'>{transaction_data['status']}</span>
-                    </div>
-                    
-                    <div style='margin-top: 30px; border-top: 1px dashed #ddd; padding-top: 15px;'>
-                        <p><strong>اسم العميل الكامل:</strong> ________________________</p>
-                        <p><strong>التوقيع:</strong> ________________________</p>
-                    </div>
-                </div>
-            </div>
-        """)
-        
-        # Print button
-        print_btn = ModernButton("طباعة", color="#4CAF50")
-        print_btn.clicked.connect(lambda: self.send_to_printer(content))
-        
-        layout.addWidget(content)
-        layout.addWidget(print_btn)
-        print_dialog.setLayout(layout)
-        print_dialog.exec()
     
     def show_received_context_menu(self, position):
         """Show context menu for received transactions table."""
@@ -1126,233 +768,6 @@ class MoneyTransferApp(QWidget):
         """Open search dialog for received transactions."""
         search_dialog = UserSearchDialog(self.user_token, self, received=True)
         search_dialog.exec()    
-    
-    def setup_new_transfer_tab(self):
-        """Set up the new transfer tab."""
-        layout = QVBoxLayout()
-
-        # Title
-        title = QLabel("نظام تحويل الأموال")
-        title.setFont(QFont("Arial", 18, QFont.Weight.Bold))
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title.setStyleSheet("color: #2c3e50; margin-bottom: 10px;")
-        layout.addWidget(title)
-        
-        # Current user and branch info (new section)
-        info_group = ModernGroupBox("معلومات الموظف والفرع", "#9b59b6")
-        info_layout = QGridLayout()
-        
-        employee_label = QLabel("الموظف:")
-        info_layout.addWidget(employee_label, 0, 1)
-        
-        # Set employee name - use full_name which will be "System Manager" for the System Manager role
-        self.employee_name_label = QLabel(self.full_name)
-        self.employee_name_label.setStyleSheet("font-weight: bold;")
-        info_layout.addWidget(self.employee_name_label, 0, 0)
-        
-        branch_label = QLabel("الفرع الحالي:")
-        info_layout.addWidget(branch_label, 0, 3)
-        
-        # Branch label will be set in load_branches method
-        self.current_branch_label = QLabel("")
-        self.current_branch_label.setStyleSheet("font-weight: bold;")
-        info_layout.addWidget(self.current_branch_label, 0, 2)
-        
-        info_group.setLayout(info_layout)
-        layout.addWidget(info_group)
-        
-        # Sender information (remains the same)
-        sender_group = ModernGroupBox("معلومات المرسل", "#e74c3c")
-        sender_layout = QGridLayout()
-        
-        # Sender name
-        sender_name_label = QLabel("اسم المرسل:")
-        sender_layout.addWidget(sender_name_label, 0, 0)
-        
-        self.sender_name_input = QLineEdit()
-        self.sender_name_input.setPlaceholderText("أدخل اسم المرسل")
-        sender_layout.addWidget(self.sender_name_input, 0, 1)
-        
-        # Sender mobile
-        sender_mobile_label = QLabel("رقم الهاتف:")
-        sender_layout.addWidget(sender_mobile_label, 0, 2)
-        
-        self.sender_mobile_input = QLineEdit()
-        self.sender_mobile_input.setPlaceholderText("أدخل رقم الهاتف")
-        sender_layout.addWidget(self.sender_mobile_input, 0, 3)
-        
-        # Sender ID
-        sender_id_label = QLabel("رقم الهوية:")
-        sender_layout.addWidget(sender_id_label, 1, 0)
-        
-        self.sender_id_input = QLineEdit()
-        self.sender_id_input.setPlaceholderText("أدخل رقم الهوية")
-        sender_layout.addWidget(self.sender_id_input, 1, 1)
-        
-        # Sender address
-        sender_address_label = QLabel("العنوان:")
-        sender_layout.addWidget(sender_address_label, 1, 2)
-        
-        self.sender_address_input = QLineEdit()
-        self.sender_address_input.setPlaceholderText("أدخل العنوان")
-        sender_layout.addWidget(self.sender_address_input, 1, 3)
-        
-        # Sender governorate (now fixed and read-only)
-        sender_governorate_label = QLabel("المحافظة:")
-        sender_layout.addWidget(sender_governorate_label, 2, 0)
-        
-        # For System Manager, we'll use a dropdown instead of a fixed label
-        if self.branch_id == 0 or self.full_name == "System Manager":
-            self.sender_governorate_input = QComboBox()
-            self.sender_governorate_input.addItems([
-                "دمشق", "ريف دمشق", "حلب", "حمص", "حماة", "اللاذقية", "طرطوس", 
-                "إدلب", "دير الزور", "الرقة", "الحسكة", "السويداء", "درعا", "القنيطرة"
-            ])
-            sender_layout.addWidget(self.sender_governorate_input, 2, 1)
-            # Hide the label that would be set in load_branches
-            self.sender_governorate_label = QLabel("")
-            self.sender_governorate_label.setVisible(False)
-        else:
-            # For regular users, use the fixed label as before
-            self.sender_governorate_label = QLabel("")  # Will be populated in load_branches
-            self.sender_governorate_label.setStyleSheet("font-weight: bold;")
-            sender_layout.addWidget(self.sender_governorate_label, 2, 1)
-        
-        # Sender location
-        sender_location_label = QLabel("المنطقة:")
-        sender_layout.addWidget(sender_location_label, 2, 2)
-        
-        self.sender_location_input = QLineEdit()
-        self.sender_location_input.setPlaceholderText("أدخل المنطقة")
-        sender_layout.addWidget(self.sender_location_input, 2, 3)
-        
-        sender_group.setLayout(sender_layout)
-        layout.addWidget(sender_group)
-        
-        # Receiver information - REMOVED region, address, and ID number fields
-        receiver_group = ModernGroupBox("معلومات المستلم", "#3498db")
-        receiver_layout = QGridLayout()
-        
-        # Receiver name
-        receiver_name_label = QLabel("اسم المستلم:")
-        receiver_layout.addWidget(receiver_name_label, 0, 0)
-        
-        self.receiver_name_input = QLineEdit()
-        self.receiver_name_input.setPlaceholderText("أدخل اسم المستلم")
-        receiver_layout.addWidget(self.receiver_name_input, 0, 1)
-        
-        # Receiver mobile
-        receiver_mobile_label = QLabel("رقم الهاتف:")
-        receiver_layout.addWidget(receiver_mobile_label, 0, 2)
-        
-        self.receiver_mobile_input = QLineEdit()
-        self.receiver_mobile_input.setPlaceholderText("أدخل رقم الهاتف")
-        receiver_layout.addWidget(self.receiver_mobile_input, 0, 3)
-        
-        # Receiver governorate (kept as it might be needed for branch selection)
-        receiver_governorate_label = QLabel("المحافظة:")
-        receiver_layout.addWidget(receiver_governorate_label, 1, 0)
-        
-        self.receiver_governorate_input = QComboBox()
-        self.receiver_governorate_input.addItems([
-            "دمشق", "ريف دمشق", "حلب", "حمص", "حماة", "اللاذقية", "طرطوس", 
-            "إدلب", "دير الزور", "الرقة", "الحسكة", "السويداء", "درعا", "القنيطرة"
-        ])
-        self.receiver_governorate_input.currentTextChanged.connect(self.update_destination_branches)
-        receiver_layout.addWidget(self.receiver_governorate_input, 1, 1)
-        
-        receiver_group.setLayout(receiver_layout)
-        layout.addWidget(receiver_group)
-        
-        # Transfer information (remains the same)
-        transfer_group = ModernGroupBox("معلومات التحويل", "#2ecc71")
-        transfer_layout = QGridLayout()
-        
-        # Amount row
-        amount_label = QLabel("المبلغ:")
-        transfer_layout.addWidget(amount_label, 0, 0)
-        
-        self.amount_input = QDoubleSpinBox()
-        self.amount_input.setRange(0, 1000000000)
-        self.amount_input.setDecimals(2)
-        self.amount_input.setSingleStep(100)
-        self.amount_input.setValue(0)
-        transfer_layout.addWidget(self.amount_input, 0, 1)
-        
-        # Benefited amount (new field)
-        benefited_label = QLabel("المبلغ المستفاد (اختياري):")
-        transfer_layout.addWidget(benefited_label, 0, 2)
-        
-        self.benefited_input = QDoubleSpinBox()
-        self.benefited_input.setRange(0, 1000000000)
-        self.benefited_input.setDecimals(2)
-        self.benefited_input.setSingleStep(100)
-        self.benefited_input.setValue(0)
-        transfer_layout.addWidget(self.benefited_input, 0, 3)
-        
-        # Currency
-        currency_label = QLabel("العملة:")
-        transfer_layout.addWidget(currency_label, 1, 0)
-        
-        self.currency_input = QComboBox()
-        self.currency_input.addItems([
-            "ليرة سورية (SYP)", 
-            "دولار أمريكي (USD)", 
-            "يورو (EUR)", 
-            "ريال سعودي (SAR)", 
-            "جنيه إسترليني (GBP)"
-        ])
-        transfer_layout.addWidget(self.currency_input, 1, 1)
-        
-        # Branch
-        branch_label = QLabel("الفرع المستلم:")
-        transfer_layout.addWidget(branch_label, 1, 2)
-        
-        self.branch_input = QComboBox()
-        transfer_layout.addWidget(self.branch_input, 1, 3)
-        # Enable branch selection for all users to allow sending to any branch
-        self.branch_input.setEnabled(True)
-        transfer_layout.addWidget(self.branch_input, 1, 3)
-        
-        # Date
-        date_label = QLabel("التاريخ:")
-        transfer_layout.addWidget(date_label, 2, 0)
-        
-        self.date_input = QDateEdit()
-        self.date_input.setCalendarPopup(True)
-        self.date_input.setDate(QDate.currentDate())
-        transfer_layout.addWidget(self.date_input, 2, 1)
-        
-        # Notes
-        notes_label = QLabel("ملاحظات:")
-        transfer_layout.addWidget(notes_label, 2, 2)
-        
-        self.notes_input = QTextEdit()
-        self.notes_input.setPlaceholderText("أدخل أي ملاحظات إضافية")
-        self.notes_input.setMaximumHeight(80)
-        transfer_layout.addWidget(self.notes_input, 2, 3)
-        
-        transfer_group.setLayout(transfer_layout)
-        layout.addWidget(transfer_group)
-        
-        # Buttons (remain the same)
-        buttons_layout = QHBoxLayout()
-        
-        clear_button = ModernButton("مسح", color="#e74c3c")
-        clear_button.clicked.connect(self.clear_form)
-        buttons_layout.addWidget(clear_button)
-        
-        save_button = ModernButton("حفظ", color="#3498db")
-        save_button.clicked.connect(self.save_transfer)
-        buttons_layout.addWidget(save_button)
-        
-        submit_button = ModernButton("إرسال", color="#2ecc71")
-        submit_button.clicked.connect(self.show_confirmation)
-        buttons_layout.addWidget(submit_button)
-        
-        layout.addLayout(buttons_layout)
-        
-        self.new_transfer_tab.setLayout(layout)
         
     def update_current_balance(self):
         """Hidden balance check for validation only"""
@@ -1560,6 +975,11 @@ class MoneyTransferApp(QWidget):
                     # Set System Manager branch info
                     self.current_branch_label.setText("الفرع الرئيسي")
                     self.sender_governorate_label.setText("مدير النظام")
+                    
+                    # Make sure the sender_governorate_input is visible and enabled
+                    if hasattr(self, 'sender_governorate_input'):
+                        self.sender_governorate_input.setVisible(True)
+                        self.sender_governorate_input.setEnabled(True)
                 else:
                     # Find current branch for regular users
                     current_branch = next((b for b in self.branches if b.get('id') == self.branch_id), None)
@@ -1759,8 +1179,8 @@ class MoneyTransferApp(QWidget):
             
             # Status - Col 7
             status = transaction.get("status", "pending")
-            status_item = QTableWidgetItem(self.get_status_arabic(status))
-            status_item.setBackground(self.get_status_color(status))
+            status_item = QTableWidgetItem(get_status_arabic(status))
+            status_item.setBackground(get_status_color(status))
             self.transactions_table.setItem(i, 7, status_item)
             
             # Type - Col 8
@@ -1810,311 +1230,6 @@ class MoneyTransferApp(QWidget):
         item.setForeground(color)
         item.setFont(QFont("Arial", 12, QFont.Weight.Bold))
         return item
-    
-    def get_status_arabic(self, status):
-        """Convert status to Arabic."""
-        status_map = {
-            "pending": "قيد الانتظار",
-            "processing": "قيد المعالجة",
-            "completed": "مكتمل",
-            "cancelled": "ملغي",
-            "rejected": "مرفوض",
-            "on_hold": "معلق"
-        }
-        return status_map.get(status, status)
-    
-    def get_status_color(self, status):
-        """Get color for status."""
-        status_colors = {
-            "pending": QColor(255, 255, 200),  # Light yellow
-            "processing": QColor(200, 200, 255),  # Light blue
-            "completed": QColor(200, 255, 200),  # Light green
-            "cancelled": QColor(255, 200, 200),  # Light red
-            "rejected": QColor(255, 150, 150),  # Darker red
-            "on_hold": QColor(255, 200, 150)  # Light orange
-        }
-        return status_colors.get(status, QColor(255, 255, 255))  # White default
-    
-    def clear_form(self):
-        """Clear the new transfer form."""
-        # Clear sender information
-        self.sender_name_input.clear()
-        self.sender_mobile_input.clear()
-        self.sender_id_input.clear()
-        self.sender_address_input.clear()
-        self.sender_location_input.clear()
-        
-        # Clear receiver information
-        self.receiver_name_input.clear()
-        self.receiver_mobile_input.clear()
-        self.receiver_governorate_input.setCurrentIndex(0)
-        
-        # Clear transfer information
-        self.amount_input.setValue(0)
-        self.benefited_input.setValue(0)
-        self.currency_input.setCurrentIndex(0)
-        self.date_input.setDate(QDate.currentDate())
-        self.notes_input.clear()
-    
-    def show_confirmation(self):
-        """Show confirmation dialog before submitting transfer."""
-        if not self.validate_transfer_form():
-            return
-        
-        # Prepare data
-        data = self.prepare_transfer_data()
-        
-        # Safely extract currency code
-        currency_text = data["currency"]
-        try:
-            # Try to extract code from parentheses
-            currency_code = currency_text.split("(")[1].split(")")[0]
-        except IndexError:
-            # If no parentheses, use the full text
-            currency_code = currency_text
-        
-        confirm_dialog = ConfirmTransactionDialog(
-            parent=self,
-            sender=data["sender"],
-            sender_mobile=data["sender_mobile"],
-            sender_governorate=data["sender_governorate"],
-            sender_location=data["sender_location"],
-            receiver=data["receiver"],
-            receiver_mobile=data["receiver_mobile"],
-            receiver_governorate=data["receiver_governorate"],
-            amount=str(data["amount"]),
-            currency=currency_code,
-            message=data["message"],
-            employee_name=data["employee_name"],
-            branch_governorate=data["branch_governorate"]
-        )
-
-        if confirm_dialog.exec() == QDialog.DialogCode.Accepted:
-            self.submit_transfer()
-    
-    def submit_transfer(self):
-        """Submit the transfer for processing."""
-        # Prepare data
-        data = self.prepare_transfer_data()
-        data["status"] = "processing"
-        
-        # Debug print
-        print("Data being sent:", data)
-        
-        try:
-            headers = {"Authorization": f"Bearer {self.user_token}"} if self.user_token else {}
-            response = requests.post(f"{self.api_url}/transactions/", json=data, headers=headers)
-            
-            if response.status_code == 201:
-                QMessageBox.information(self, "نجاح", "تم إرسال التحويل بنجاح")
-                self.clear_form()
-                self.load_transactions()
-                self.load_notifications()
-                # Update balance and notify parent
-                self.update_current_balance()
-                self.transferCompleted.emit()  # Emit signal to update dashboard
-            else:
-                # Print the full error response
-                print("Error response:", response.text)
-                error_msg = f"فشل إرسال التحويل: رمز الحالة {response.status_code}"
-                try:
-                    error_data = response.json()
-                    if "detail" in error_data:
-                        if isinstance(error_data["detail"], list):
-                            error_msg = "\n".join([str(err) for err in error_data["detail"]])
-                        else:
-                            error_msg = str(error_data["detail"])
-                except:
-                    pass
-                QMessageBox.warning(self, "خطأ", error_msg)
-        except Exception as e:
-            print(f"Error submitting transfer: {e}")
-            QMessageBox.critical(self, "خطأ في الاتصال", 
-                            "تعذر الاتصال بالخادم. الرجاء التحقق من اتصالك بالإنترنت وحالة الخادم.")
-    
-    def save_transfer(self):
-        """Save the transfer as a draft."""
-        # Validate required fields
-        if not self.validate_transfer_form():
-            return
-        
-        # Prepare data
-        data = self.prepare_transfer_data()
-        data["status"] = "pending"  # Draft status
-        
-        try:
-            headers = {"Authorization": f"Bearer {self.user_token}"} if self.user_token else {}
-            response = requests.post(f"{self.api_url}/transactions/", json=data, headers=headers)
-            
-            if response.status_code == 201:
-                QMessageBox.information(self, "نجاح", "تم حفظ التحويل بنجاح")
-                self.clear_form()
-                self.load_transactions()
-            else:
-                error_msg = f"فشل إرسال التحويل: رمز الحالة {response.status_code}"
-                try:
-                    error_data = response.json()
-                    if "detail" in error_data:
-                        details = error_data["detail"]
-                        if isinstance(details, list):
-                            # Convert each error into a readable string
-                            error_msg = "\n".join([f"{err.get('loc', [''])[-1]}: {err.get('msg', '')}" for err in details])
-                        else:
-                            error_msg = details
-                except:
-                    pass
-                QMessageBox.warning(self, "خطأ", error_msg)
-        
-        # Add missing except block for the outer try
-        except Exception as e:
-            print(f"Error saving transfer: {e}")
-            QMessageBox.critical(self, "خطأ في الاتصال", 
-                            "تعذر الاتصال بالخادم. الرجاء التحقق من اتصالك بالإنترنت وحالة الخادم.")
-    
-    def validate_transfer_form(self):
-        """Validate the transfer form with balance checks and enhanced validation"""
-        # Validate sender information
-        if not self.sender_name_input.text().strip():
-            QMessageBox.warning(self, "تنبيه", "الرجاء إدخال اسم المرسل الصحيح")
-            return False
-        
-        sender_mobile = self.sender_mobile_input.text().strip()
-        if len(sender_mobile) != 10 or not sender_mobile.isdigit():
-            QMessageBox.warning(self, "خطأ", "رقم هاتف المرسل يجب أن يكون 10 أرقام فقط")
-            return False
-        
-        # Validate receiver information
-        receiver_name = self.receiver_name_input.text().strip()
-        if not receiver_name or len(receiver_name) < 4:
-            QMessageBox.warning(self, "تنبيه", "الرجاء إدخال اسم مستلم صحيح (4 أحرف على الأقل)")
-            return False
-        
-        receiver_mobile = self.receiver_mobile_input.text().strip()
-        if len(receiver_mobile) != 10 or not receiver_mobile.isdigit():
-            QMessageBox.warning(self, "خطأ", "رقم هاتف المستلم يجب أن يكون 10 أرقام فقط")
-            return False
-        
-        # Validate amount
-        base_amount = self.amount_input.value()
-        benefited_amount = self.benefited_input.value()
-        total_amount = base_amount + benefited_amount
-        
-        if total_amount <= 0:
-            QMessageBox.warning(self, "خطأ", "المبلغ الإجمالي يجب أن يكون أكبر من الصفر")
-            return False
-        
-        # Validate branch selection
-        if self.branch_input.currentData() in [-1, None]:
-            QMessageBox.warning(self, "تنبيه", "الرجاء تحديد فرع مستلم صحيح من القائمة")
-            return False
-        
-        # Get currency code
-        currency_text = self.currency_input.currentText()
-        if "(" not in currency_text or ")" not in currency_text:
-            QMessageBox.warning(self, "خطأ", "تنسيق العملة غير صحيح")
-            return False
-        currency_code = currency_text.split("(")[1].split(")")[0]
-        
-        # Skip balance check for System Manager
-        if self.branch_id == 0 or self.full_name == "System Manager":
-            # System Manager has unlimited funds, no need to check balance
-            pass
-        else:
-            # Hidden balance check through API for regular branches
-            try:
-                headers = {"Authorization": f"Bearer {self.user_token}"}
-                response = requests.get(
-                    f"{self.api_url}/branches/{self.branch_id}",
-                    headers=headers,
-                    timeout=5
-                )
-                
-                if response.status_code == 200:
-                    branch_data = response.json()
-                    financial_stats = branch_data.get("financial_stats", {})
-                    
-                    # Check balance based on currency
-                    if currency_code == "SYP":
-                        available_balance = financial_stats.get("available_balance_syp", financial_stats.get("available_balance", 0))
-                    elif currency_code == "USD":
-                        available_balance = financial_stats.get("available_balance_usd", 0)
-                    else:
-                        # For other currencies, default to SYP balance
-                        available_balance = financial_stats.get("available_balance_syp", financial_stats.get("available_balance", 0))
-                    
-                    if total_amount > available_balance:
-                        QMessageBox.warning(
-                            self, 
-                            "رصيد غير كافي",
-                            f"لا يوجد رصيد كافي بعملة {currency_code} لإتمام هذه العملية\nالرجاء التواصل مع المدير"
-                        )
-                        return False
-                else:
-                    QMessageBox.warning(
-                        self,
-                        "خطأ في التحقق",
-                        "تعذر التحقق من الرصيد المتاح. الرجاء المحاولة لاحقاً"
-                    )
-                    return False
-                    
-            except Exception as e:
-                QMessageBox.warning(
-                    self,
-                    "خطأ في الاتصال",
-                    "تعذر الاتصال بالخادم. الرجاء التحقق من اتصال الإنترنت"
-                )
-                return False
-        
-        # Validate employee information
-        # Special handling for System Manager account
-        if self.branch_id == 0 or self.user_role == "director" or self.full_name == "System Manager":
-            # System Manager is always valid, no need to verify employee information
-            pass
-        elif not self.username or not self.branch_id:
-            QMessageBox.warning(self, "خطأ", "تعذر التحقق من معلومات الموظف")
-            return False
-
-        return True
-    
-    def prepare_transfer_data(self):
-        """Prepare transfer data for submission."""
-        # Calculate total amount
-        dest_branch_id = self.branch_input.currentData()
-        base_amount = self.amount_input.value()
-        benefited_amount = self.benefited_input.value()
-        total_amount = base_amount + benefited_amount
-
-        # Get current branch info
-        current_branch_name = self.current_branch_label.text().split(" - ")[0]
-        current_branch_governorate = self.sender_governorate_label.text()
-        
-        # Extract currency code from the display text
-        currency_text = self.currency_input.currentText()
-        currency_code = currency_text.split("(")[1].split(")")[0]
-
-        data = {
-            "sender": self.sender_name_input.text(),
-            "sender_mobile": self.sender_mobile_input.text(),
-            "sender_id": self.sender_id_input.text(),
-            "sender_address": self.sender_address_input.text(),
-            "sender_governorate": current_branch_governorate,
-            "sender_location": self.sender_location_input.text(),
-            "receiver": self.receiver_name_input.text(),
-            "receiver_mobile": self.receiver_mobile_input.text(),
-            "receiver_governorate": self.receiver_governorate_input.currentText(),
-            "receiver_location": "",  # Empty string if not needed
-            "amount": total_amount,
-            "base_amount": base_amount,
-            "benefited_amount": benefited_amount,
-            "currency": currency_code,
-            "message": self.notes_input.toPlainText(),
-            "employee_name": self.username,
-            "branch_name": current_branch_name,
-            "branch_governorate": current_branch_governorate,
-            "destination_branch_id": dest_branch_id,
-            "branch_id": self.branch_id
-        }
-        return data
     
     def show_transaction_details(self, item):
         """Show transaction details when an item is double-clicked."""
@@ -2261,538 +1376,84 @@ class MoneyTransferApp(QWidget):
             QMessageBox.critical(self, "خطأ في الاتصال", 
                             "تعذر الاتصال بالخادم. الرجاء التحقق من اتصالك بالإنترنت وحالة الخادم.")
     
-    def print_transaction(self, item):
-        """Handle transaction double-click to print."""
-        try:
-            row = item.row()
-            transaction_data = {
-                "id": self.transactions_table.item(row, 0).text(),
-                "date": self.transactions_table.item(row, 1).text(),
-                "sender": self.transactions_table.item(row, 2).text(),
-                "receiver": self.transactions_table.item(row, 3).text(),
-                "amount": self.transactions_table.item(row, 4).text(),
-                "currency": self.transactions_table.item(row, 5).text(),
-                "receiver_governorate": self.transactions_table.item(row, 6).text(),
-                "status": self.transactions_table.item(row, 7).text(),
-                "employee_name": self.transactions_table.item(row, 8).text(),
-                "sending_branch": self.transactions_table.item(row, 9).text(),
-                "destination_branch": self.transactions_table.item(row, 10).text(),
-                "branch_governorate": self.transactions_table.item(row, 11).text()
-            }
-            
-            # Format transaction ID with dashes like in the image (1925-5814-5221)
-            # If the ID is numeric, format it with dashes
-            formatted_id = transaction_data['id']
-            if transaction_data['id'].isdigit() and len(transaction_data['id']) >= 4:
-                id_parts = []
-                id_str = transaction_data['id']
-                while id_str:
-                    if len(id_str) > 4:
-                        id_parts.append(id_str[:4])
-                        id_str = id_str[4:]
-                    else:
-                        id_parts.append(id_str)
-                        id_str = ""
-                formatted_id = "-".join(id_parts)
-            
-            # Convert amount to Arabic words
-            amount_in_arabic = number_to_arabic_words(transaction_data['amount'], transaction_data['currency'])
-            
-            # Create print dialog
-            print_dialog = QDialog(self)
-            print_dialog.setWindowTitle("طباعة التحويل")
-            print_dialog.setFixedSize(600, 700)
-            
-            layout = QVBoxLayout()
-            
-            # Create printable content with improved layout
-            content = QTextEdit()
-            content.setReadOnly(True)
-            content.setHtml(f"""
-                <div style='font-family: Arial; direction: rtl; background-color: #f9f9f9; padding: 0; margin: 0;'>
-                    <!-- Header -->
-                    <div style='text-align: right; padding: 10px; background-color: #e8f5e9; border-bottom: 1px solid #ddd;'>
-                        <h2 style='margin: 0; color: #333;'>طباعة التحويل</h2>
-                    </div>
-                    
-                    <!-- Transaction Number Row -->
-                    <div style='margin: 15px 0; text-align: center;'>
-                        <div style='display: flex; justify-content: space-between; align-items: center;'>
-                            <div style='flex: 1; text-align: right;'>
-                                <strong style='color: #333;'>الرقم</strong>
-                            </div>
-                            <div style='flex: 3; text-align: center;'>
-                                <strong style='font-size: 16px;'>{formatted_id}</strong>
-                            </div>
-                            <div style='flex: 1; text-align: center; background-color: #e8f5e9; padding: 5px; border-radius: 4px;'>
-                                <strong style='color: #2e7d32;'>إرسال</strong>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <!-- Main Content -->
-                    <div style='margin: 0 10px;'>
-                        <!-- From/To Row -->
-                        <div style='display: flex; justify-content: space-between; margin-bottom: 8px; border-bottom: 1px solid #eee; padding-bottom: 8px;'>
-                            <div style='flex: 1; text-align: right;'>
-                                <strong style='color: #555;'>من</strong>
-                            </div>
-                            <div style='flex: 5; text-align: left;'>
-                                {transaction_data['sending_branch']}
-                            </div>
-                        </div>
-                        
-                        <div style='display: flex; justify-content: space-between; margin-bottom: 8px; border-bottom: 1px solid #eee; padding-bottom: 8px;'>
-                            <div style='flex: 1; text-align: right;'>
-                                <strong style='color: #555;'>إلى</strong>
-                            </div>
-                            <div style='flex: 5; text-align: left;'>
-                                {transaction_data['destination_branch']}
-                            </div>
-                        </div>
-                        
-                        <!-- Sender Row -->
-                        <div style='display: flex; justify-content: space-between; margin-bottom: 8px; border-bottom: 1px solid #eee; padding-bottom: 8px;'>
-                            <div style='flex: 1; text-align: right;'>
-                                <strong style='color: #555;'>المرسل</strong>
-                            </div>
-                            <div style='flex: 5; text-align: left;'>
-                                {transaction_data['sender']}
-                            </div>
-                        </div>
-                        
-                        <!-- Receiver Row -->
-                        <div style='display: flex; justify-content: space-between; margin-bottom: 8px; border-bottom: 1px solid #eee; padding-bottom: 8px;'>
-                            <div style='flex: 1; text-align: right;'>
-                                <strong style='color: #555;'>المفوض</strong>
-                            </div>
-                            <div style='flex: 5; text-align: left;'>
-                                {transaction_data['receiver']}
-                            </div>
-                        </div>
-                        
-                        <!-- Contact Row -->
-                        <div style='display: flex; justify-content: space-between; margin-bottom: 8px; border-bottom: 1px solid #eee; padding-bottom: 8px;'>
-                            <div style='flex: 1; text-align: right;'>
-                                <strong style='color: #555;'>اتصال</strong>
-                            </div>
-                            <div style='flex: 5; text-align: left;'>
-                                {transaction_data.get('receiver_mobile', '')}
-                            </div>
-                        </div>
-                        
-                        <!-- Beneficiary Row -->
-                        <div style='display: flex; justify-content: space-between; margin-bottom: 8px; border-bottom: 1px solid #eee; padding-bottom: 8px;'>
-                            <div style='flex: 1; text-align: right;'>
-                                <strong style='color: #555;'>المستفيد</strong>
-                            </div>
-                            <div style='flex: 5; text-align: left;'>
-                                {transaction_data['receiver']}
-                            </div>
-                        </div>
-                        
-                        <!-- Recipient Row -->
-                        <div style='display: flex; justify-content: space-between; margin-bottom: 8px; border-bottom: 1px solid #eee; padding-bottom: 8px;'>
-                            <div style='flex: 1; text-align: right;'>
-                                <strong style='color: #555;'>المستلم</strong>
-                            </div>
-                            <div style='flex: 5; text-align: left;'>
-                                {transaction_data['receiver']}
-                            </div>
-                        </div>
-                        
-                        <!-- Contact (Phone) Row -->
-                        <div style='display: flex; justify-content: space-between; margin-bottom: 8px; border-bottom: 1px solid #eee; padding-bottom: 8px;'>
-                            <div style='flex: 1; text-align: right;'>
-                                <strong style='color: #555;'>اتصال</strong>
-                            </div>
-                            <div style='flex: 5; text-align: left;'>
-                                {transaction_data.get('receiver_mobile', '')}
-                            </div>
-                        </div>
-                        
-                        <!-- Date Row -->
-                        <div style='display: flex; justify-content: space-between; margin-bottom: 8px; border-bottom: 1px solid #eee; padding-bottom: 8px;'>
-                            <div style='flex: 1; text-align: right;'>
-                                <strong style='color: #555;'>التاريخ</strong>
-                            </div>
-                            <div style='flex: 5; text-align: left;'>
-                                {transaction_data['date']}
-                            </div>
-                        </div>
-                        
-                        <!-- Amount Row -->
-                        <div style='display: flex; justify-content: space-between; margin-bottom: 8px; border-bottom: 1px solid #eee; padding-bottom: 8px;'>
-                            <div style='flex: 1; text-align: right;'>
-                                <strong style='color: #555;'>المبلغ</strong>
-                            </div>
-                            <div style='flex: 5; text-align: left;'>
-                                {transaction_data['amount']} {transaction_data['currency']}
-                            </div>
-                        </div>
-                        
-                        <!-- Amount in Words Row -->
-                        <div style='margin-bottom: 15px; padding: 8px; background-color: #f5f5f5; border-radius: 4px;'>
-                            <p style='margin: 0; text-align: right; color: #333;'>
-                                {amount_in_arabic}
-                            </p>
-                        </div>
-                    </div>
-                    
-                    <!-- Footer Note -->
-                    <div style='margin: 15px 0; text-align: center; color: #4CAF50; font-weight: bold;'>
-                        <p>يطلب تبليغ المستفيد برقم الحوالة</p>
-                    </div>
-                    
-                    <!-- System Section -->
-                    <hr style='border: none; border-top: 1px solid #ddd; margin: 20px 0;'>
-                    
-                    <div style='text-align: right; margin: 0 10px;'>
-                        <h3 style='color: #4CAF50; margin-bottom: 15px;'>نسخة النظام</h3>
-                        
-                        <div style='margin-bottom: 8px;'>
-                            <strong style='color: #555;'>بيانات فرع المرسل:</strong>
-                            <span style='margin-right: 10px;'>{transaction_data['sending_branch']}</span>
-                        </div>
-                        
-                        <div style='margin-bottom: 8px;'>
-                            <strong style='color: #555;'>بيانات فرع المستلم:</strong>
-                            <span style='margin-right: 10px;'>{transaction_data['destination_branch']} - {transaction_data['branch_governorate']}</span>
-                        </div>
-                        
-                        <div style='margin-bottom: 8px;'>
-                            <strong style='color: #555;'>اسم الموظف:</strong>
-                            <span style='margin-right: 10px;'>{transaction_data['employee_name']}</span>
-                        </div>
-                        
-                        <div style='margin-bottom: 8px;'>
-                            <strong style='color: #555;'>نوع التحويل:</strong>
-                            <span style='margin-right: 10px;'>تحويل صادر</span>
-                        </div>
-                        
-                        <div style='margin-bottom: 8px;'>
-                            <strong style='color: #555;'>حالة التحويل:</strong>
-                            <span style='margin-right: 10px;'>{transaction_data['status']}</span>
-                        </div>
-                        
-                        <div style='margin-top: 30px; border-top: 1px dashed #ddd; padding-top: 15px;'>
-                            <p><strong>اسم العميل الكامل:</strong> ________________________</p>
-                            <p><strong>التوقيع:</strong> ________________________</p>
-                        </div>
-                    </div>
-                </div>
-            """)
-            
-            # Print button
-            print_btn = ModernButton("طباعة", color="#4CAF50")
-            print_btn.clicked.connect(lambda: self.send_to_printer(content))
-            
-            layout.addWidget(content)
-            layout.addWidget(print_btn)
-            print_dialog.setLayout(layout)
-            print_dialog.exec()
-
-        except Exception as e:
-            print(f"Printing error: {str(e)}")
-            QMessageBox.warning(self, "خطأ في الطباعة", "حدث خطأ أثناء تحضير البيانات للطباعة")
-            
-            # Print button
-            print_btn = ModernButton("طباعة", color="#27ae60")
-            print_btn.clicked.connect(lambda: self.send_to_printer(content))
-            
-            layout.addWidget(content)
-            layout.addWidget(print_btn)
-            print_dialog.setLayout(layout)
-            print_dialog.exec()
-
-        except Exception as e:
-            print(f"Printing error: {str(e)}")
-            QMessageBox.warning(self, "خطأ في الطباعة", "حدث خطأ أثناء تحضير البيانات للطباعة")
-
-    def send_to_printer(self, content):
-        """Handle actual printing functionality."""
-        from PyQt6.QtPrintSupport import QPrinter, QPrintDialog
-        
-        printer = QPrinter()
-        print_dialog = QPrintDialog(printer, self)
-        
-        if print_dialog.exec() == QDialog.DialogCode.Accepted:
-            content.print(printer)
-    
     def open_search_dialog(self):
         """Open the search dialog."""
         search_dialog = UserSearchDialog(token=self.user_token, parent=self)
         search_dialog.exec()
 
-class TransactionDetailsDialog(QDialog):
-    """Dialog for displaying transaction details."""
-    
-    def __init__(self, transaction, parent=None):
-        super().__init__(parent)
-        self.transaction = transaction
-        
-        self.setWindowTitle("تفاصيل التحويل")
-        self.setGeometry(300, 300, 500, 400)
-        self.setStyleSheet("""
-            QDialog {
-                background-color: #f5f5f5;
-                font-family: Arial;
-            }
-            QLabel {
-                color: #333;
-            }
-            QGroupBox {
-                font-weight: bold;
-                border: 1px solid #3498db;
-                border-radius: 5px;
-                margin-top: 1em;
-                padding-top: 10px;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 5px 0 5px;
-                color: #3498db;
-            }
-        """)
-        
-        self.setup_ui()
-    
-    def setup_ui(self):
-        """Set up the UI components."""
-        layout = QVBoxLayout()
-        
-        # Transaction info group
-        transaction_group = QGroupBox("معلومات التحويل")
-        transaction_layout = QFormLayout()
-        
-        # Transaction ID
-        transaction_id_label = QLabel("رقم التحويل:")
-        transaction_id_value = QLabel(str(self.transaction.get("id", "")))
-        transaction_id_value.setStyleSheet("font-weight: bold;")
-        transaction_layout.addRow(transaction_id_label, transaction_id_value)
-        
-        # Date
-        date_label = QLabel("التاريخ:")
-        date_value = QLabel(self.transaction.get("date", ""))
-        date_value.setStyleSheet("font-weight: bold;")
-        transaction_layout.addRow(date_label, date_value)
-        
-        # Amount
-        amount_label = QLabel("المبلغ:")
-        amount = self.transaction.get("amount", 0)
-        formatted_amount = f"{float(amount):,.2f}" if amount else "0.00"
-        amount_value = QLabel(formatted_amount)
-        amount_value.setStyleSheet("font-weight: bold;")
-        transaction_layout.addRow(amount_label, amount_value)
-        
-        # Status
-        status_label = QLabel("الحالة:")
-        status = self.transaction.get("status", "pending")
-        status_arabic = self.get_status_arabic(status)
-        status_value = QLabel(status_arabic)
-        status_value.setStyleSheet(f"font-weight: bold; color: {self.get_status_text_color(status)};")
-        transaction_layout.addRow(status_label, status_value)
-        
-        transaction_group.setLayout(transaction_layout)
-        layout.addWidget(transaction_group)
-        
-        # Sender info group
-        sender_group = QGroupBox("معلومات المرسل")
-        sender_layout = QFormLayout()
-        
-        # Sender name
-        sender_name_label = QLabel("الاسم:")
-        sender_name_value = QLabel(self.transaction.get("sender_name", ""))
-        sender_name_value.setStyleSheet("font-weight: bold;")
-        sender_layout.addRow(sender_name_label, sender_name_value)
-        
-        # Sender mobile
-        sender_mobile_label = QLabel("رقم الهاتف:")
-        sender_mobile_value = QLabel(self.transaction.get("sender_mobile", ""))
-        sender_layout.addRow(sender_mobile_label, sender_mobile_value)
-        
-        # Sender ID
-        sender_id_label = QLabel("رقم الهوية:")
-        sender_id_value = QLabel(self.transaction.get("sender_id", ""))
-        sender_layout.addRow(sender_id_label, sender_id_value)
-        
-        # Sender address
-        sender_address_label = QLabel("العنوان:")
-        sender_address_value = QLabel(self.transaction.get("sender_address", ""))
-        sender_layout.addRow(sender_address_label, sender_address_value)
-        
-        sender_group.setLayout(sender_layout)
-        layout.addWidget(sender_group)
-        
-        # Receiver info group
-        receiver_group = QGroupBox("معلومات المستلم")
-        receiver_layout = QFormLayout()
-        
-        # Receiver name
-        receiver_name_label = QLabel("الاسم:")
-        receiver_name_value = QLabel(self.transaction.get("receiver_name", ""))
-        receiver_name_value.setStyleSheet("font-weight: bold;")
-        receiver_layout.addRow(receiver_name_label, receiver_name_value)
-        
-        # Receiver mobile
-        receiver_mobile_label = QLabel("رقم الهاتف:")
-        receiver_mobile_value = QLabel(self.transaction.get("receiver_mobile", ""))
-        receiver_layout.addRow(receiver_mobile_label, receiver_mobile_value)
-        
-        # Receiver ID
-        receiver_id_label = QLabel("رقم الهوية:")
-        receiver_id_value = QLabel(self.transaction.get("receiver_id", ""))
-        receiver_layout.addRow(receiver_id_label, receiver_id_value)
-        
-        # Receiver address
-        receiver_address_label = QLabel("العنوان:")
-        receiver_address_value = QLabel(self.transaction.get("receiver_address", ""))
-        receiver_layout.addRow(receiver_address_label, receiver_address_value)
-        
-        receiver_group.setLayout(receiver_layout)
-        layout.addWidget(receiver_group)
-        
-        # Additional info group
-        additional_group = QGroupBox("معلومات إضافية")
-        additional_layout = QFormLayout()
-        
-        # Employee
-        employee_label = QLabel("الموظف:")
-        employee_value = QLabel(self.transaction.get("employee_name", ""))
-        additional_layout.addRow(employee_label, employee_value)
-        
-        # Branch
-        branch_label = QLabel("الفرع المرسل:")
-        branch_value = QLabel(self.transaction.get("sending_branch_name", ""))
-        additional_layout.addRow(branch_label, branch_value)
-        
-        # Destination branch
-        dest_branch_label = QLabel("الفرع المستلم:")
-        dest_branch_value = QLabel(self.transaction.get("destination_branch_name", ""))
-        additional_layout.addRow(dest_branch_label, dest_branch_value)
-        
-        # Add currency
-        currency_label = QLabel("العملة:")
-        currency_value = QLabel(self.transaction.get("currency", ""))
-        currency_value.setStyleSheet("font-weight: bold;")
-        transaction_layout.addRow(currency_label, currency_value)
-        
-        # Add branch governorate
-        branch_gov_label = QLabel("محافظة الفرع:")
-        branch_gov_value = QLabel(self.transaction.get("branch_governorate", ""))
-        branch_gov_value.setStyleSheet("font-weight: bold;")
-        transaction_layout.addRow(branch_gov_label, branch_gov_value)
+    def print_transaction(self, item):
+        """Print outgoing transaction receipt."""
+        try:
+            # Get row data
+            if isinstance(item, str):
+                # If called with transaction_id string
+                for row in range(self.transactions_table.rowCount()):
+                    if self.transactions_table.item(row, 0).text() == item:
+                        break
+            else:
+                # If called with table item
+                row = item.row()
+
+            # Check transaction status
+            status = self.transactions_table.item(row, 7).text()
+            if status != "مكتمل":
+                QMessageBox.warning(self, "تحذير", "لا يمكن طباعة الإيصال للتحويلات غير المؤكدة")
+                return
+
+            # Get transaction ID and fetch complete data
+            transaction_id = self.transactions_table.item(row, 0).text()
+            headers = {"Authorization": f"Bearer {self.user_token}"} if self.user_token else {}
+            response = requests.get(f"{self.api_url}/transactions/{transaction_id}", headers=headers)
+
+            if response.status_code == 200:
+                transaction_details = response.json()
+                
+                # Clean amount string and convert to float
+                amount_str = self.transactions_table.item(row, 4).text().replace(',', '')  # Remove commas
+                
+                # Collect transaction data with phone numbers from server response
+                transaction_data = {
+                    'id': transaction_id,
+                    'date': self.transactions_table.item(row, 1).text(),
+                    'sender': self.transactions_table.item(row, 2).text(),
+                    'sender_mobile': transaction_details.get('sender_mobile', ''),  # Get from server response
+                    'receiver': self.transactions_table.item(row, 3).text(),
+                    'receiver_mobile': transaction_details.get('receiver_mobile', ''),  # Get from server response
+                    'amount': float(amount_str),  # Convert clean string to float
+                    'currency': self.transactions_table.item(row, 5).text(),
+                    'receiver_governorate': self.transactions_table.item(row, 6).text(),
+                    'status': status,
+                    'employee_name': self.transactions_table.item(row, 8).text(),
+                    'sending_branch_name': self.transactions_table.item(row, 9).text(),
+                    'destination_branch_name': self.transactions_table.item(row, 10).text(),
+                    'branch_governorate': self.transactions_table.item(row, 11).text(),
+                    'received_status': status,  # Match received_status field
+                    'received_by': self.full_name,  # Match received_by field
+                    'received_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),  # Match received_at field
+                    'type': 'sent'
+                }
+
+                # Print the receipt using the standard print_receipt method
+                self.print_receipt(transaction_data)
+            else:
+                QMessageBox.warning(self, "خطأ", "فشل في استرجاع بيانات التحويل الكاملة")
+
+        except Exception as e:
+            QMessageBox.warning(self, "خطأ في الطباعة", f"حدث خطأ أثناء تحضير البيانات للطباعة: {str(e)}")
+
+    def refresh_branches(self):
+        """Refresh branch data and update relevant UI elements."""
+        try:
+            # Load updated branch data
+            self.load_branches()
             
-        # Notes
-        notes_label = QLabel("ملاحظات:")
-        notes_value = QLabel(self.transaction.get("notes", ""))
-        notes_value.setWordWrap(True)
-        additional_layout.addRow(notes_label, notes_value)
-        
-        additional_group.setLayout(additional_layout)
-        layout.addWidget(additional_group)
-        
-        # Buttons
-        buttons_layout = QHBoxLayout()
-        
-        print_button = QPushButton("طباعة")
-        print_button.setStyleSheet("""
-            QPushButton {
-                background-color: #3498db;
-                color: white;
-                border-radius: 5px;
-                padding: 8px 16px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #2980b9;
-            }
-        """)
-        print_button.clicked.connect(self.print_transaction)
-        buttons_layout.addWidget(print_button)
-        
-        close_button = QPushButton("إغلاق")
-        close_button.setStyleSheet("""
-            QPushButton {
-                background-color: #e74c3c;
-                color: white;
-                border-radius: 5px;
-                padding: 8px 16px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #c0392b;
-            }
-        """)
-        close_button.clicked.connect(self.accept)
-        buttons_layout.addWidget(close_button)
-        
-        layout.addLayout(buttons_layout)
-        
-        self.setLayout(layout)
-    
-    def get_status_arabic(self, status):
-        """Convert status to Arabic."""
-        status_map = {
-            "pending": "قيد الانتظار",
-            "processing": "قيد المعالجة",
-            "completed": "مكتمل",
-            "cancelled": "ملغي",
-            "rejected": "مرفوض",
-            "on_hold": "معلق"
-        }
-        return status_map.get(status, status)
-    
-    def get_status_text_color(self, status):
-        """Get text color for status."""
-        status_colors = {
-            "pending": "#f39c12",  # Orange
-            "processing": "#3498db",  # Blue
-            "completed": "#2ecc71",  # Green
-            "cancelled": "#e74c3c",  # Red
-            "rejected": "#c0392b",  # Darker red
-            "on_hold": "#f1c40f"  # Yellow
-        }
-        return status_colors.get(status, "#333333")  # Dark gray default
-    
-    def print_transaction(self):
-        """Print the transaction details."""
-        # Create printable content
-        printer = QPrinter()
-        print_dialog = QPrintDialog(printer, self)
-        
-        if print_dialog.exec() == QDialog.DialogCode.Accepted:
-            # Create a temporary widget to hold the print content
-            print_widget = QTextEdit()
-            print_widget.setHtml(f"""
-                <div style='text-align: center; font-family: Arial;'>
-                    <h1 style='color: #2c3e50;'>تفاصيل التحويل</h1>
-                    <hr>
-                    <div style='text-align: right;'>
-                        <p><b>رقم التحويل:</b> {self.transaction.get('id', '')}</p>
-                        <p><b>التاريخ:</b> {self.transaction.get('date', '')}</p>
-                        <h3 style='color: #e74c3c;'>المرسل:</h3>
-                        <p>{self.transaction.get('sender_name', '')}</p>
-                        <p>الهاتف: {self.transaction.get('sender_mobile', '')}</p>
-                        <p>الهوية: {self.transaction.get('sender_id', '')}</p>
-                        <p>العنوان: {self.transaction.get('sender_address', '')}</p>
-                        <h3 style='color: #3498db;'>المستلم:</h3>
-                        <p>{self.transaction.get('receiver_name', '')}</p>
-                        <p>الهاتف: {self.transaction.get('receiver_mobile', '')}</p>
-                        <p>الهوية: {self.transaction.get('receiver_id', '')}</p>
-                        <p>العنوان: {self.transaction.get('receiver_address', '')}</p>
-                        <p><b>المبلغ:</b> {self.transaction.get('amount', '')}</p>
-                        <p><b>حالة التحويل:</b> {self.get_status_arabic(self.transaction.get('status', ''))}</p>
-                        <p><b>الموظف:</b> {self.transaction.get('employee_name', '')}</p>
-                        <p><b>الفرع:</b> {self.transaction.get('branch_name', '')}</p>
-                        <p><b>ملاحظات:</b> {self.transaction.get('notes', '')}</p>
-                        <hr>
-                        <p style='color: #95a5a6;'>شكراً لاستخدامكم خدماتنا</p>
-                    </div>
-                </div>
-            """)
-            print_widget.print(printer)
+            # Update destination branches based on current governorate selection
+            if hasattr(self, 'receiver_governorate_input'):
+                selected_gov = self.receiver_governorate_input.currentText()
+                self.update_destination_branches(selected_gov)
+                
+        except Exception as e:
+            print(f"Error refreshing branches: {str(e)}")
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

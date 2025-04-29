@@ -7,68 +7,10 @@ from PyQt6.QtGui import QFont, QColor
 from PyQt6.QtCore import Qt
 from PyQt6.QtPrintSupport import QPrinter, QPrintDialog
 import requests
+from ui.custom_widgets import ModernGroupBox, ModernButton
 from datetime import datetime
 import os
-class ModernGroupBox(QGroupBox):
-    """Custom styled group box."""
-    
-    def __init__(self, title, color="#3498db"):
-        super().__init__(title)
-        self.setStyleSheet(f"""
-            QGroupBox {{
-                font-weight: bold;
-                border: 1px solid {color};
-                border-radius: 5px;
-                margin-top: 1em;
-                padding-top: 10px;
-            }}
-            QGroupBox::title {{
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 5px 0 5px;
-                color: {color};
-            }}
-        """)
-
-class ModernButton(QPushButton):
-    """Custom styled button."""
-    
-    def __init__(self, text, color="#3498db"):
-        super().__init__(text)
-        self.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {color};
-                color: white;
-                border-radius: 5px;
-                padding: 8px;
-                font-weight: bold;
-            }}
-            QPushButton:hover {{
-                background-color: {self.lighten_color(color)};
-            }}
-            QPushButton:pressed {{
-                background-color: {self.darken_color(color)};
-            }}
-        """)
-    
-    def lighten_color(self, color):
-        """Lighten a hex color."""
-        # Simple implementation - not perfect but works for our needs
-        if color.startswith('#'):
-            color = color[1:]
-        r = min(255, int(color[0:2], 16) + 20)
-        g = min(255, int(color[2:4], 16) + 20)
-        b = min(255, int(color[4:6], 16) + 20)
-        return f"#{r:02x}{g:02x}{b:02x}"
-    
-    def darken_color(self, color):
-        """Darken a hex color."""
-        if color.startswith('#'):
-            color = color[1:]
-        r = max(0, int(color[0:2], 16) - 20)
-        g = max(0, int(color[2:4], 16) - 20)
-        b = max(0, int(color[4:6], 16) - 20)
-        return f"#{r:02x}{g:02x}{b:02x}"
+from money_transfer.receipt_printer import ReceiptPrinter
 
 class UserSearchDialog(QDialog):
     """Dialog for searching and viewing user and transaction information."""
@@ -296,6 +238,8 @@ class UserSearchDialog(QDialog):
         # Initially hide user type selection
         self.toggle_user_type_visibility()
         
+        self.user_search_input.returnPressed.connect(self.search_users)  # Trigger search on Enter
+        
         self.users_tab.setLayout(layout)
     
     def setup_transfers_tab(self):
@@ -446,18 +390,20 @@ class UserSearchDialog(QDialog):
             QMessageBox.warning(self, "تنبيه", "الرجاء إدخال كلمة البحث")
             return
 
-        # Determine search parameters
+        # Only send non-empty parameters
         params = {}
-        if self.name_radio.isChecked():
+        if self.name_radio.isChecked() and search_term:
             params["name"] = search_term
-        elif self.mobile_radio.isChecked():
+        if self.mobile_radio.isChecked() and search_term:
             params["mobile"] = search_term
-        elif self.id_radio.isChecked():
+        if self.id_radio.isChecked() and search_term:
             params["id_number"] = search_term
-        elif self.governorate_radio.isChecked():
+        if self.governorate_radio.isChecked() and search_term:
             params["governorate"] = search_term
-        elif self.user_type_radio.isChecked():
-            params["user_type"] = self.user_type_combo.currentData()
+        if self.user_type_radio.isChecked():
+            user_type_value = self.user_type_combo.currentData()
+            if user_type_value:
+                params["user_type"] = user_type_value
 
         # Show loading indicator
         self.users_table.setRowCount(1)
@@ -466,53 +412,45 @@ class UserSearchDialog(QDialog):
         self.users_table.setItem(0, 0, loading_item)
         for col in range(1, self.users_table.columnCount()):
             self.users_table.setItem(0, col, QTableWidgetItem(""))
-        
-        # Disable search button during search
         self.user_search_button.setEnabled(False)
         self.user_search_button.setText("جاري البحث...")
-        
-        # Process events to update UI
         QApplication.processEvents()
 
         try:
             headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
             response = requests.get(f"{self.api_url}/customers/", params=params, headers=headers, timeout=10)
-            
-            # Clear the table before adding new results
             self.users_table.setRowCount(0)
-            
             if response.status_code == 200:
                 customers = response.json().get("customers", [])
-                
                 if not customers:
                     QMessageBox.information(self, "نتائج البحث", "لم يتم العثور على نتائج مطابقة لمعايير البحث")
                     return
-                
                 self.users_table.setRowCount(len(customers))
-                
                 for i, cust in enumerate(customers):
-                    # Create name item and store customer data
-                    name_item = QTableWidgetItem(cust.get("name", ""))
+                    user_type = cust.get("user_type", "")
+                    if user_type == "sender":
+                        name = cust.get("sender_name", "غير متوفر") or "غير متوفر"
+                        mobile = cust.get("sender_mobile", "غير متوفر") or "غير متوفر"
+                        governorate = cust.get("sender_governorate", "غير متوفر") or "غير متوفر"
+                        location = cust.get("sender_location", "غير متوفر") or "غير متوفر"
+                        id_number = cust.get("sender_id", "غير متوفر") or "غير متوفر"
+                    else:
+                        name = cust.get("receiver_name", "غير متوفر") or "غير متوفر"
+                        mobile = cust.get("receiver_mobile", "غير متوفر") or "غير متوفر"
+                        governorate = cust.get("receiver_governorate", "غير متوفر") or "غير متوفر"
+                        location = cust.get("receiver_location", "غير متوفر") or "غير متوفر"
+                        id_number = cust.get("receiver_id", "غير متوفر") or "غير متوفر"
+                    name_item = QTableWidgetItem(name)
                     name_item.setData(Qt.ItemDataRole.UserRole, cust)
                     self.users_table.setItem(i, 0, name_item)
-                    
-                    # Set other columns
-                    self.users_table.setItem(i, 1, QTableWidgetItem(cust.get("mobile", "")))
-                    self.users_table.setItem(i, 2, QTableWidgetItem(cust.get("governorate", "")))
-                    
-                    # Add location in column 3
-                    self.users_table.setItem(i, 3, QTableWidgetItem(cust.get("location", "")))
-                    
-                    self.users_table.setItem(i, 4, QTableWidgetItem(cust.get("id_number", "")))
-                    
-                    # Set user type with color coding
-                    user_type = cust.get("user_type", "")
+                    self.users_table.setItem(i, 1, QTableWidgetItem(mobile))
+                    self.users_table.setItem(i, 2, QTableWidgetItem(governorate))
+                    self.users_table.setItem(i, 3, QTableWidgetItem(location))
+                    self.users_table.setItem(i, 4, QTableWidgetItem(id_number))
                     user_type_arabic = "مرسل" if user_type == "sender" else "مستلم"
                     type_item = QTableWidgetItem(user_type_arabic)
                     type_item.setBackground(QColor(200, 255, 200) if user_type == "sender" else QColor(255, 200, 200))
                     self.users_table.setItem(i, 5, type_item)
-                    
-                # Sort by name for better usability
                 self.users_table.sortItems(0, Qt.SortOrder.AscendingOrder)
             elif response.status_code == 401:
                 QMessageBox.warning(self, "خطأ في المصادقة", "انتهت صلاحية الجلسة. الرجاء تسجيل الدخول مرة أخرى.")
@@ -526,10 +464,8 @@ class UserSearchDialog(QDialog):
             QMessageBox.critical(self, "خطأ في الاتصال", "تعذر الاتصال بالخادم. الرجاء التحقق من اتصالك بالإنترنت.")
         except Exception as e:
             print(f"Error searching users: {e}")
-            QMessageBox.critical(self, "خطأ في الاتصال", 
-                               "تعذر الاتصال بالخادم. الرجاء التحقق من اتصالك بالإنترنت وحالة الخادم.")
+            QMessageBox.critical(self, "خطأ في الاتصال", "تعذر الاتصال بالخادم. الرجاء التحقق من اتصالك بالإنترنت وحالة الخادم.")
         finally:
-            # Re-enable search button
             self.user_search_button.setEnabled(True)
             self.user_search_button.setText("بحث")
     
@@ -552,6 +488,19 @@ class UserSearchDialog(QDialog):
         elif self.date_radio.isChecked():
             search_type = "date"
         
+        # Only send non-empty parameters
+        params = {}
+        if search_type == "transaction_id" and search_term:
+            params["id"] = search_term
+        elif search_type == "sender_name" and search_term:
+            params["sender"] = search_term
+        elif search_type == "receiver_name" and search_term:
+            params["receiver"] = search_term
+        elif search_type == "status" and search_term:
+            params["status"] = search_term
+        elif search_type == "date" and search_term:
+            params["date"] = search_term
+
         # Show loading indicator
         self.transfers_table.setRowCount(1)
         loading_item = QTableWidgetItem("جاري البحث...")
@@ -571,21 +520,6 @@ class UserSearchDialog(QDialog):
             headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
             
             # Use the standard /transactions/ endpoint with query parameters instead of custom search endpoint
-            params = {}
-            if search_type == "transaction_id":
-                params["id"] = search_term
-            elif search_type == "sender_name":
-                params["sender"] = search_term
-            elif search_type == "receiver_name":
-                params["receiver"] = search_term
-            elif search_type == "status":
-                params["status"] = search_term
-            elif search_type == "date":
-                params["date"] = search_term
-            
-            # Clear the table before adding new results
-            self.transfers_table.setRowCount(0)
-                
             response = requests.get(f"{self.api_url}/transactions/", params=params, headers=headers, timeout=10)
             
             if response.status_code == 200:
@@ -665,18 +599,25 @@ class UserSearchDialog(QDialog):
             if not user:
                 self.user_info_label.setText("لم يتم العثور على بيانات المستخدم")
                 return
-                
-            # Update user info label with detailed information
-            user_type = "مرسل" if user.get('user_type') == "sender" else "مستلم"
-            self.user_info_label.setText(
-                f"<b>الاسم:</b> {user.get('name', '')}<br>"
-                f"<b>رقم الهاتف:</b> {user.get('mobile', '')}<br>"
-                f"<b>رقم الهوية:</b> {user.get('id_number', '')}<br>"
-                f"<b>المحافظة:</b> {user.get('governorate', '')}<br>"
-                f"<b>الموقع:</b> {user.get('location', '')}<br>"
-                f"<b>النوع:</b> {user_type}<br>"
-                f"<b>العنوان:</b> {user.get('address', '')}"
-            )
+            user_type = user.get('user_type')
+            if user_type == "sender":
+                self.user_info_label.setText(
+                    f"<b>الاسم:</b> {user.get('sender_name', 'غير متوفر')}<br>"
+                    f"<b>رقم الهاتف:</b> {user.get('sender_mobile', 'غير متوفر')}<br>"
+                    f"<b>رقم الهوية:</b> {user.get('sender_id', 'غير متوفر')}<br>"
+                    f"<b>المحافظة:</b> {user.get('sender_governorate', 'غير متوفر')}<br>"
+                    f"<b>الموقع:</b> {user.get('sender_location', 'غير متوفر')}<br>"
+                    f"<b>النوع:</b> مرسل<br>"
+                )
+            else:
+                self.user_info_label.setText(
+                    f"<b>الاسم:</b> {user.get('receiver_name', 'غير متوفر')}<br>"
+                    f"<b>رقم الهاتف:</b> {user.get('receiver_mobile', 'غير متوفر')}<br>"
+                    f"<b>رقم الهوية:</b> {user.get('receiver_id', 'غير متوفر')}<br>"
+                    f"<b>المحافظة:</b> {user.get('receiver_governorate', 'غير متوفر')}<br>"
+                    f"<b>الموقع:</b> {user.get('receiver_location', 'غير متوفر')}<br>"
+                    f"<b>النوع:</b> مستلم<br>"
+                )
             self.user_info_label.setTextFormat(Qt.TextFormat.RichText)
     
     def on_transfer_selection_changed(self):
@@ -783,69 +724,18 @@ class UserSearchDialog(QDialog):
         details_dialog.exec()
     
     def print_transfer(self):
-        """Print the selected transfer."""
+        """Print the selected transfer using ReceiptPrinter."""
         selected_rows = self.transfers_table.selectionModel().selectedRows()
         if not selected_rows:
             return
-        
         row = selected_rows[0].row()
         transaction = self.transfers_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
-        
         if not transaction:
             QMessageBox.warning(self, "خطأ", "لم يتم العثور على بيانات التحويل")
             return
-            
-        # Create print dialog
-        print_dialog = QDialog(self)
-        print_dialog.setWindowTitle("طباعة التحويل")
-        print_dialog.setFixedSize(400, 600)
-        
-        layout = QVBoxLayout()
-        
-        # Create printable content
-        content = QTextEdit()
-        content.setReadOnly(True)
-        content.setHtml(f"""
-            <div style='text-align: center; font-family: Arial;'>
-                <h1 style='color: #2c3e50;'>إيصال تحويل أموال</h1>
-                <hr>
-                <div style='text-align: right;'>
-                    <p><b>رقم التحويل:</b> {transaction.get('id', '')}</p>
-                    <p><b>تاريخ التحويل:</b> {transaction.get('date', '')}</p>
-                    <h3 style='color: #e74c3c;'>المرسل:</h3>
-                    <p>{transaction.get('sender', '')}</p>
-                    <p>الهاتف: {transaction.get('sender_mobile', '')}</p>
-                    <p>المحافظة: {transaction.get('sender_governorate', '')}</p>
-                    <h3 style='color: #3498db;'>المستلم:</h3>
-                    <p>{transaction.get('receiver', '')}</p>
-                    <p>الهاتف: {transaction.get('receiver_mobile', '')}</p>
-                    <p>المحافظة: {transaction.get('receiver_governorate', '')}</p>
-                    <p><b>المبلغ:</b> {transaction.get('amount', '')} {transaction.get('currency', '')}</p>
-                    <p><b>الفرع المرسل:</b> {transaction.get('branch_name', '')}</p>
-                    <p><b>الفرع المستلم:</b> {transaction.get('destination_branch_name', '')}</p>
-                    <p><b>الحالة:</b> {self._get_status_arabic(transaction.get('status', ''))}</p>
-                    <hr>
-                    <p style='color: #95a5a6;'>شكراً لاستخدامكم خدماتنا</p>
-                </div>
-            </div>
-        """)
-        
-        # Print button
-        print_btn = ModernButton("طباعة", color="#27ae60")
-        print_btn.clicked.connect(lambda: self.send_to_printer(content))
-        
-        layout.addWidget(content)
-        layout.addWidget(print_btn)
-        print_dialog.setLayout(layout)
-        print_dialog.exec()
-    
-    def send_to_printer(self, content):
-        """Send content to printer."""
-        printer = QPrinter()
-        print_dialog = QPrintDialog(printer, self)
-        
-        if print_dialog.exec() == QDialog.DialogCode.Accepted:
-            content.print_(printer)
+        # Use ReceiptPrinter to print
+        printer = ReceiptPrinter(self)
+        printer.print_receipt(transaction)
     
     def add_receiver_info(self):
         """Add or update receiver information for the selected transfer."""

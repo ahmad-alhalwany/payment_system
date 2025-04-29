@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException, Depends, status
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
 from models import User, Branch, Base, BranchFund
-from pydantic import BaseModel
+from pydantic import BaseModel, validator, ValidationError
 import uuid
 from datetime import datetime, timedelta
 from security import hash_password, verify_password, create_jwt_token, SECRET_KEY, ALGORITHM
@@ -23,6 +23,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Database URL
 SQLALCHEMY_DATABASE_URL = "sqlite:///./transactions.db"
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
@@ -48,18 +49,29 @@ class Transaction(BaseModel):
     sender_mobile: str
     sender_governorate: str
     sender_location: str
+    sender_id: Optional[str] = None
+    sender_address: Optional[str] = None
+    
     receiver: str
     receiver_mobile: str
     receiver_governorate: str
-    receiver_location: str
+    receiver_location: Optional[str] = None
+    receiver_id: Optional[str] = None
+    receiver_address: Optional[str] = None
+    
     amount: float
+    base_amount: float
+    benefited_amount: float
+    tax_rate: float
+    tax_amount: float
     currency: str = "ليرة سورية"
+    
     message: str
     employee_name: str
     branch_governorate: str
     destination_branch_id: int
-    
-    
+    branch_id: Optional[int] = None
+
 class TransactionReceived(BaseModel):
     transaction_id: str
     is_received: bool
@@ -88,7 +100,7 @@ class ChangePassword(BaseModel):
 class FundAllocation(BaseModel):
     amount: float
     type: str  # 'allocation' أو 'deduction'
-    currency: str = "SYP"  # Added currency field with default value
+    currency: str   # Added currency field with default value
     description: Optional[str] = None
     
 class TransactionResponse(BaseModel):
@@ -110,7 +122,13 @@ class UserCreate(BaseModel):
     username: str
     password: str
     role: str = "employee"
-    branch_id: Optional[int] = None    
+    branch_id: Optional[int] = None  
+    
+class BranchUpdate(BaseModel):
+    name: Optional[str] = None
+    location: Optional[str] = None
+    governorate: Optional[str] = None
+    status: Optional[str] = None
     
 class UserUpdate(BaseModel):
     username: Optional[str] = None
@@ -119,7 +137,19 @@ class UserUpdate(BaseModel):
     branch_id: Optional[int] = None
 
     class Config:
-        from_attributes = True     
+        from_attributes = True 
+        
+class UserCreate(BaseModel):
+    username: str
+    password: str
+    role: str = "employee"
+    branch_id: Optional[int] = None
+    
+class BranchCreate(BaseModel):
+    branch_id: str
+    name: str
+    location: str
+    governorate: str     
         
 def get_current_user(token: str = Depends(oauth2_scheme)):
     credentials_exception = HTTPException(
@@ -318,27 +348,34 @@ def save_to_db(transaction, branch_id=None, employee_id=None):
                     WHERE id = ?
                 """, (new_destination_allocated, new_destination_allocated, transaction.destination_branch_id))
         
-        # 5. Insert transaction
+        # Insert transaction
         cursor.execute("""
             INSERT INTO transactions (
                 id, sender, sender_mobile, sender_governorate, sender_location, 
-                receiver, receiver_mobile, receiver_governorate, receiver_location, 
-                amount, currency, message, branch_id, destination_branch_id,
-                employee_id, employee_name, branch_governorate, status, date
+                sender_id, sender_address, receiver, receiver_mobile, 
+                receiver_governorate, receiver_location, receiver_id, receiver_address,
+                amount, base_amount, benefited_amount, tax_rate, tax_amount, currency,
+                message, branch_id, destination_branch_id, employee_id, employee_name, 
+                branch_governorate, status, is_received, type, received_by, received_at,
+                date
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             transaction_id, transaction.sender, transaction.sender_mobile,
             transaction.sender_governorate, transaction.sender_location,
+            transaction.sender_id or "", transaction.sender_address or "",
             transaction.receiver, transaction.receiver_mobile,
-            transaction.receiver_governorate, transaction.receiver_location,
-            transaction.amount, transaction.currency, transaction.message,
-            branch_id, transaction.destination_branch_id,
+            transaction.receiver_governorate, transaction.receiver_location or "",
+            transaction.receiver_id or "", transaction.receiver_address or "",
+            transaction.amount, transaction.base_amount, transaction.benefited_amount,
+            transaction.tax_rate, transaction.tax_amount, transaction.currency,
+            transaction.message or "", branch_id, transaction.destination_branch_id,
             employee_id, transaction.employee_name,
-            transaction.branch_governorate, "processing", transaction_date
+            transaction.branch_governorate, "processing", False, "transfer",
+            None, None, transaction_date
         ))
         
-        # 6. Record fund deduction for sending branch (skip for System Manager)
+        # Record fund deduction for sending branch (skip for System Manager)
         if not is_system_manager:
             cursor.execute("""
                 INSERT INTO branch_funds (
@@ -352,7 +389,7 @@ def save_to_db(transaction, branch_id=None, employee_id=None):
                 f"Transaction {transaction_id} deduction"
             ))
         
-        # 7. Record fund allocation for receiving branch
+        # Record fund allocation for receiving branch
         cursor.execute("""
             INSERT INTO branch_funds (
                 branch_id, amount, type, currency, description
@@ -365,7 +402,7 @@ def save_to_db(transaction, branch_id=None, employee_id=None):
             f"Transaction {transaction_id} allocation from {is_system_manager and 'System Manager' or f'branch {branch_id}'}"
         ))
         
-        # 8. Create notification
+        # Create notification
         notification_message = f"Hello {transaction.receiver}, you have a new money transfer of {transaction.amount} {transaction.currency} waiting. Please visit your nearest branch to collect it."
         cursor.execute("""
             INSERT INTO notifications (transaction_id, recipient_phone, message, status)
@@ -377,6 +414,7 @@ def save_to_db(transaction, branch_id=None, employee_id=None):
         
     except sqlite3.Error as e:
         conn.rollback()
+        print(f"SQLite error in save_to_db: {e}")
         raise HTTPException(
             status_code=500,
             detail=f"Database error: {str(e)}"
@@ -386,6 +424,7 @@ def save_to_db(transaction, branch_id=None, employee_id=None):
         raise he
     except Exception as e:
         conn.rollback()
+        print(f"Unexpected error in save_to_db: {e}")
         raise HTTPException(
             status_code=500,
             detail=f"Unexpected error: {str(e)}"
@@ -393,7 +432,6 @@ def save_to_db(transaction, branch_id=None, employee_id=None):
     finally:
         conn.close()
         
-# Add this to your FastAPI endpoints
 @app.delete("/branches/{branch_id}/allocations/")
 def reset_allocations(
     branch_id: int,
@@ -477,6 +515,44 @@ def reset_allocations(
         
         return {"status": "success", "message": "All allocations reset"}
     
+@app.put("/branches/{branch_id}")
+def update_branch(
+    branch_id: int,
+    branch_data: BranchUpdate,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
+):
+    if current_user["role"] != "director":
+        raise HTTPException(status_code=403, detail="Director access required")
+
+    branch = db.query(Branch).filter(Branch.id == branch_id).first()
+    if not branch:
+        raise HTTPException(status_code=404, detail="Branch not found")
+
+    update_data = branch_data.dict(exclude_unset=True)
+    
+    # Update branch fields
+    for field, value in update_data.items():
+        setattr(branch, field, value)
+
+    try:
+        db.commit()
+        db.refresh(branch)
+        return {
+            "status": "success",
+            "branch": {
+                "id": branch.id,
+                "branch_id": branch.branch_id,
+                "name": branch.name,
+                "location": branch.location,
+                "governorate": branch.governorate,
+                "status": branch.status
+            }
+        }
+    except sqlalchemy.exc.IntegrityError as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="Branch ID or name already exists")
+    
 @app.get("/customers/")
 def get_customers(
     name: Optional[str] = None,
@@ -491,15 +567,21 @@ def get_customers(
 
     base_query = """
         SELECT 
-            CASE WHEN ? = 'sender' THEN sender ELSE receiver END as name,
-            CASE WHEN ? = 'sender' THEN sender_mobile ELSE receiver_mobile END as mobile,
-            CASE WHEN ? = 'sender' THEN sender_governorate ELSE receiver_governorate END as governorate,
-            CASE WHEN ? = 'sender' THEN NULL ELSE receiver_id END as id_number,
+            sender as sender_name,
+            sender_mobile,
+            sender_governorate,
+            sender_location,
+            sender_id,
+            receiver as receiver_name,
+            receiver_mobile,
+            receiver_governorate,
+            receiver_location,
+            receiver_id,
             ? as user_type
         FROM transactions
         WHERE 1=1
     """
-    params = [user_type, user_type, user_type, user_type, user_type]
+    params = [user_type]
 
     conditions = []
     if name:
@@ -509,18 +591,21 @@ def get_customers(
         conditions.append("(sender_mobile LIKE ? OR receiver_mobile LIKE ?)")
         params.extend([f"%{mobile}%", f"%{mobile}%"])
     if id_number:
-        conditions.append("receiver_id LIKE ?")
-        params.append(f"%{id_number}%")
+        conditions.append("(sender_id LIKE ? OR receiver_id LIKE ?)")
+        params.extend([f"%{id_number}%", f"%{id_number}%"])
     if governorate:
         conditions.append("(sender_governorate LIKE ? OR receiver_governorate LIKE ?)")
         params.extend([f"%{governorate}%", f"%{governorate}%"])
     if user_type:
-        conditions.append("? IS NOT NULL")
+        if user_type == "sender":
+            conditions.append("sender IS NOT NULL")
+        elif user_type == "receiver":
+            conditions.append("receiver IS NOT NULL")
 
     final_query = base_query
     if conditions:
         final_query += " AND " + " AND ".join(conditions)
-    final_query += " GROUP BY name, mobile, governorate, id_number"
+    final_query += " GROUP BY sender_name, sender_mobile, sender_governorate, sender_location, sender_id, receiver_name, receiver_mobile, receiver_governorate, receiver_location, receiver_id"
 
     cursor.execute(final_query, params)
     customers = cursor.fetchall()
@@ -529,14 +614,19 @@ def get_customers(
     customer_list = []
     for cust in customers:
         customer_list.append({
-            "name": cust[0],
-            "mobile": cust[1],
-            "governorate": cust[2],
-            "id_number": cust[3] if cust[3] else "",
-            "user_type": cust[4]
+            "sender_name": cust[0] or "",
+            "sender_mobile": cust[1] or "",
+            "sender_governorate": cust[2] or "",
+            "sender_location": cust[3] or "",
+            "sender_id": cust[4] or "",
+            "receiver_name": cust[5] or "",
+            "receiver_mobile": cust[6] or "",
+            "receiver_governorate": cust[7] or "",
+            "receiver_location": cust[8] or "",
+            "receiver_id": cust[9] or "",
+            "user_type": cust[10] or ""
         })
-    return {"customers": customer_list}   
-
+    return {"customers": customer_list}
 
 @app.get("/check-initialization/")
 def check_initialization(db: Session = Depends(get_db)):
@@ -588,43 +678,68 @@ def allocate_funds(
     if not branch:
         raise HTTPException(status_code=404, detail="Branch not found")
 
-    # التحقق من نوع العملية والعملة
-    if allocation.currency == "SYP":
+    # Validate currency input
+    currency = allocation.currency.upper()  # Normalize to uppercase
+    if currency not in ["SYP", "USD"]:
+        raise HTTPException(status_code=400, 
+                          detail="العملة غير مدعومة. الرجاء استخدام SYP أو USD")
+
+    # Handle SYP operations
+    if currency == "SYP":
         if allocation.type == 'deduction':
             if branch.allocated_amount_syp < allocation.amount:
-                raise HTTPException(status_code=400, detail="رصيد الفرع بالليرة السورية غير كافي للخصم")
+                raise HTTPException(
+                    status_code=400,
+                    detail="رصيد الفرع بالليرة السورية غير كافي للخصم"
+                )
             branch.allocated_amount_syp -= allocation.amount
-            # Update legacy field for backward compatibility
-            branch.allocated_amount = branch.allocated_amount_syp
         else:
             branch.allocated_amount_syp += allocation.amount
-            # Update legacy field for backward compatibility
-            branch.allocated_amount = branch.allocated_amount_syp
-    elif allocation.currency == "USD":
+        
+        # Update legacy field explicitly
+        branch.allocated_amount = branch.allocated_amount_syp
+
+    # Handle USD operations
+    elif currency == "USD":
         if allocation.type == 'deduction':
             if branch.allocated_amount_usd < allocation.amount:
-                raise HTTPException(status_code=400, detail="رصيد الفرع بالدولار الأمريكي غير كافي للخصم")
+                raise HTTPException(
+                    status_code=400,
+                    detail="رصيد الفرع بالدولار الأمريكي غير كافي للخصم"
+                )
             branch.allocated_amount_usd -= allocation.amount
         else:
             branch.allocated_amount_usd += allocation.amount
-    else:
-        raise HTTPException(status_code=400, detail="العملة غير مدعومة. الرجاء استخدام SYP أو USD")
 
-    # تسجيل العملية
+    # Create audit record with precise values
     fund_record = BranchFund(
         branch_id=branch_id,
-        amount=allocation.amount if allocation.type == 'allocation' else -allocation.amount,
+        amount=allocation.amount * (1 if allocation.type == 'allocation' else -1),
         type=allocation.type,
-        currency=allocation.currency,
-        description=allocation.description or f"{'إيداع' if allocation.type == 'allocation' else 'خصم'} بواسطة {current_user['username']} ({allocation.currency})"
+        currency=currency,
+        description=(
+            allocation.description or 
+            f"{'إيداع' if allocation.type == 'allocation' else 'خصم'} "
+            f"بواسطة {current_user['username']} ({currency})"
+        )
     )
-    db.add(fund_record)
-    db.commit()
     
-    if allocation.currency == "SYP":
-        return {"status": "success", "new_allocated": branch.allocated_amount_syp, "currency": "SYP"}
-    else:
-        return {"status": "success", "new_allocated": branch.allocated_amount_usd, "currency": "USD"}
+    try:
+        db.add(fund_record)
+        db.commit()
+    except SQLAlchemyError as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"فشل في حفظ العملية: {str(e)}"
+        )
+
+    return {
+        "status": "success",
+        "new_allocated_syp": branch.allocated_amount_syp,
+        "new_allocated_usd": branch.allocated_amount_usd,
+        "currency": currency
+    }
 
 @app.get("/branches/{branch_id}/funds-history")
 def get_funds_history(
@@ -641,25 +756,13 @@ def get_funds_history(
     ).order_by(BranchFund.created_at.desc()).all()
 
     return [{
-        "date": record.created_at.strftime("%Y-%m-%d"),  # تنسيق التاريخ
+        "date": record.created_at.strftime("%Y-%m-%d") if record.created_at else "غير معروف",
         "type": record.type,
         "amount": record.amount,
+        "currency": record.currency,  # إضافة حقل العملة
         "description": record.description
     } for record in history]
-
-class UserCreate(BaseModel):
-    username: str
-    password: str
-    role: str = "employee"
-    branch_id: Optional[int] = None
     
-class BranchCreate(BaseModel):
-    branch_id: str
-    name: str
-    location: str
-    governorate: str    
-    
-
 @app.post("/send-money/")
 async def send_money(transaction: Transaction, current_user: dict = Depends(get_current_user)):
     branch_id = current_user.get("branch_id")
@@ -672,28 +775,72 @@ async def send_money(transaction: Transaction, current_user: dict = Depends(get_
 @app.post("/transactions/", status_code=201)
 async def create_transaction(transaction: Transaction, current_user: dict = Depends(get_current_user)):
     try:
-        # Use the branch_id and user ID from the authenticated user
-        branch_id = current_user.get("branch_id")
+        # Validate amounts
+        if transaction.amount <= 0:
+            raise HTTPException(status_code=400, detail="المبلغ يجب أن يكون أكبر من صفر")
+        
+        if transaction.base_amount < 0 or transaction.benefited_amount < 0:
+            raise HTTPException(status_code=400, detail="المبالغ لا يمكن أن تكون سالبة")
+        
+        # Generate unique transaction ID
+        transaction_id = str(uuid.uuid4())
+        
+        # Get branch information
+        branch_id = transaction.branch_id or current_user.get("branch_id")
         employee_id = current_user.get("user_id")
         
-        transaction_id = save_to_db(transaction, branch_id, employee_id)
-        
-        return {
-            "status": "success",
-            "message": "Transaction saved!",
-            "transaction_id": transaction_id
+        # Create transaction record
+        transaction_data = {
+            "id": transaction_id,
+            "sender": transaction.sender,
+            "sender_mobile": transaction.sender_mobile,
+            "sender_governorate": transaction.sender_governorate,
+            "sender_location": transaction.sender_location,
+            "sender_id": transaction.sender_id or "",
+            "sender_address": transaction.sender_address or "",
+            
+            "receiver": transaction.receiver,
+            "receiver_mobile": transaction.receiver_mobile,
+            "receiver_governorate": transaction.receiver_governorate,
+            "receiver_location": transaction.receiver_location or "",
+            "receiver_id": transaction.receiver_id or "",
+            "receiver_address": transaction.receiver_address or "",
+            
+            "amount": transaction.amount,
+            "base_amount": transaction.base_amount,
+            "benefited_amount": transaction.benefited_amount,
+            "tax_rate": transaction.tax_rate,
+            "tax_amount": transaction.tax_amount,
+            "currency": transaction.currency,
+            
+            "message": transaction.message or "",
+            "employee_name": transaction.employee_name,
+            "branch_governorate": transaction.branch_governorate,
+            "branch_id": branch_id,
+            "destination_branch_id": transaction.destination_branch_id,
+            "employee_id": employee_id,
+            "status": "processing",
+            "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "is_received": False
         }
         
-    except TypeError as e:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Error generating receipt: {str(e)}"
-        )
+        # Save to database using the save_to_db function
+        try:
+            transaction_id = save_to_db(transaction, branch_id, employee_id)
+            return {
+                "status": "success",
+                "message": "تم إنشاء التحويل بنجاح",
+                "transaction_id": transaction_id
+            }
+        except Exception as e:
+            print(f"Error saving transaction: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+        
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Internal server error: {str(e)}"
-        )
+        print(f"Unexpected error in create_transaction: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 class TransactionReceived(BaseModel):
     transaction_id: str
@@ -1194,7 +1341,12 @@ def get_transactions(
     branch_id: Optional[int] = None,
     filter_type: Optional[str] = None,
     destination_branch_id: Optional[int] = None,
-    limit: Optional[int] = None
+    limit: Optional[int] = None,
+    id: Optional[str] = None,
+    sender: Optional[str] = None,
+    receiver: Optional[str] = None,
+    status: Optional[str] = None,
+    date: Optional[str] = None
 ):
     conn = sqlite3.connect("transactions.db")
     conn.row_factory = sqlite3.Row
@@ -1228,6 +1380,23 @@ def get_transactions(
     if destination_branch_id:
         where_clauses.append("t.destination_branch_id = ?")
         params.append(destination_branch_id)
+
+    # New: Specific search filters
+    if id:
+        where_clauses.append("t.id LIKE ?")
+        params.append(f"%{id}%")
+    if sender:
+        where_clauses.append("t.sender LIKE ?")
+        params.append(f"%{sender}%")
+    if receiver:
+        where_clauses.append("t.receiver LIKE ?")
+        params.append(f"%{receiver}%")
+    if status:
+        where_clauses.append("t.status = ?")
+        params.append(status)
+    if date:
+        where_clauses.append("t.date LIKE ?")
+        params.append(f"%{date}%")
 
     # Governorate filtering
     if filter_type:
@@ -1970,3 +2139,232 @@ def generate_employees_report(db: Session, branch_id):
         })
     
     return {"items": employee_list}
+
+# Tax-related endpoints
+class TaxRateUpdate(BaseModel):
+    tax_rate: float
+
+    @validator('tax_rate')
+    def validate_tax_rate(cls, v):
+        if v < 0 or v > 100:
+            raise ValueError('Tax rate must be between 0 and 100')
+        return v
+
+@app.put("/api/branches/{branch_id}/tax_rate/")
+def update_branch_tax_rate(
+    branch_id: int,
+    tax_data: TaxRateUpdate,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
+):
+    if current_user["role"] != "director":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only directors can update tax rates"
+        )
+    
+    if tax_data.tax_rate < 0 or tax_data.tax_rate > 100:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Tax rate must be between 0 and 100"
+        )
+    
+    try:
+        branch = db.query(Branch).filter(Branch.id == branch_id).first()
+        if not branch:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Branch not found"
+            )
+        
+        branch.tax_rate = tax_data.tax_rate
+        db.commit()
+        
+        return {
+            "id": branch.id,
+            "name": branch.name,
+            "tax_rate": branch.tax_rate,
+            "message": "Tax rate updated successfully"
+        }
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+@app.get("/api/branches/{branch_id}/tax_rate/")
+def get_branch_tax_rate(
+    branch_id: int,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
+):
+    """Get tax rate for a specific branch"""
+    # Find the branch
+    branch = db.query(Branch).filter(Branch.id == branch_id).first()
+    if not branch:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Branch not found"
+        )
+    
+    return {
+        "id": branch.id,
+        "name": branch.name,
+        "tax_rate": branch.tax_rate
+    }
+
+@app.get("/api/transactions/tax_summary/")
+def tax_summary_endpoint(
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+    date_from: str = None,
+    date_to: str = None,
+    branch_id: int = None,
+    currency: str = None,
+    status: str = None
+):
+    """Get tax summary data for transactions."""
+    try:
+        # Build base query
+        query = """
+            SELECT 
+                t.branch_id,
+                b.name as branch_name,
+                COUNT(*) as transaction_count,
+                SUM(t.amount) as total_amount,
+                SUM(t.benefited_amount) as benefited_amount,
+                AVG(t.tax_rate) as avg_tax_rate,
+                SUM(t.tax_amount) as tax_amount,
+                t.currency
+            FROM transactions t
+            LEFT JOIN branches b ON t.branch_id = b.id
+            WHERE 1=1
+        """
+        params = []
+
+        # Add date filters
+        if date_from:
+            query += " AND t.date >= ?"
+            params.append(date_from)
+        if date_to:
+            query += " AND t.date <= ?"
+            params.append(date_to)
+            
+        # Add branch filter
+        if branch_id:
+            query += " AND t.branch_id = ?"
+            params.append(branch_id)
+            
+        # Add currency filter
+        if currency:
+            query += " AND t.currency = ?"
+            params.append(currency)
+            
+        # Add status filter
+        if status:
+            query += " AND t.status = ?"
+            params.append(status)
+        else:
+            # By default, exclude cancelled transactions
+            query += " AND t.status != 'cancelled'"
+            
+        # Group by branch
+        query += " GROUP BY t.branch_id, b.name, t.currency"
+
+        # Execute query
+        conn = sqlite3.connect("transactions.db")
+        cursor = conn.cursor()
+        cursor.execute(query, params)
+        branch_results = cursor.fetchall()
+        
+        # Get transaction details
+        details_query = """
+            SELECT 
+                t.id,
+                t.date,
+                t.amount,
+                t.benefited_amount,
+                t.tax_rate,
+                t.tax_amount,
+                t.currency,
+                sb.name as source_branch,
+                db.name as destination_branch,
+                t.status
+            FROM transactions t
+            LEFT JOIN branches sb ON t.branch_id = sb.id
+            LEFT JOIN branches db ON t.destination_branch_id = db.id
+            WHERE 1=1
+        """
+        
+        # Add the same filters
+        if date_from:
+            details_query += " AND t.date >= ?"
+        if date_to:
+            details_query += " AND t.date <= ?"
+        if branch_id:
+            details_query += " AND t.branch_id = ?"
+        if currency:
+            details_query += " AND t.currency = ?"
+        if status:
+            details_query += " AND t.status = ?"
+        else:
+            details_query += " AND t.status != 'cancelled'"
+            
+        cursor.execute(details_query, params)
+        transaction_details = cursor.fetchall()
+        
+        # Calculate totals
+        total_amount = sum(float(row[3] or 0) for row in branch_results)
+        total_benefited = sum(float(row[4] or 0) for row in branch_results)
+        total_tax = sum(float(row[6] or 0) for row in branch_results)
+        total_transactions = sum(int(row[2] or 0) for row in branch_results)
+        
+        # Format branch summary
+        branch_summary = []
+        for row in branch_results:
+            branch_summary.append({
+                "branch_id": row[0],
+                "branch_name": row[1],
+                "transaction_count": row[2],
+                "total_amount": float(row[3] or 0),
+                "benefited_amount": float(row[4] or 0),
+                "tax_rate": float(row[5] or 0),
+                "tax_amount": float(row[6] or 0),
+                "currency": row[7]
+            })
+
+        # Format transaction details
+        transactions = []
+        for row in transaction_details:
+            transactions.append({
+                "id": row[0],
+                "date": row[1],
+                "amount": float(row[2] or 0),
+                "benefited_amount": float(row[3] or 0),
+                "tax_rate": float(row[4] or 0),
+                "tax_amount": float(row[5] or 0),
+                "currency": row[6],
+                "source_branch": row[7],
+                "destination_branch": row[8],
+                "status": row[9]
+            })
+
+        return {
+            "total_amount": total_amount,
+            "total_benefited_amount": total_benefited,
+            "total_tax_amount": total_tax,
+            "total_transactions": total_transactions,
+            "branch_summary": branch_summary,
+            "transactions": transactions
+        }
+        
+    except Exception as e:
+        logger.error(f"Error in tax_summary_endpoint: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error retrieving tax summary: {str(e)}"
+        )
+    finally:
+        if 'conn' in locals():
+            conn.close()

@@ -1,0 +1,169 @@
+import requests
+from PyQt6.QtWidgets import (
+    QVBoxLayout, QHBoxLayout, QPushButton,
+    QWidget, QTableWidget, QTableWidgetItem, QHeaderView,
+    QMessageBox, QPushButton, QHBoxLayout
+)
+from ui.custom_widgets import ModernGroupBox, ModernButton
+from PyQt6.QtGui import QColor
+
+class EmployeesTabMixin:
+
+    def setup_employees_tab(self):
+        """Set up the employees management tab."""
+        layout = QVBoxLayout()
+        
+        # Employees table
+        employees_group = ModernGroupBox("قائمة الموظفين", "#2ecc71")
+        employees_layout = QVBoxLayout()
+        
+        self.employees_table = QTableWidget()
+        self.employees_table.setColumnCount(5)
+        self.employees_table.setHorizontalHeaderLabels([
+            "اسم المستخدم", "الدور", "الحالة", "تاريخ الإنشاء", "الإجراءات"
+        ])
+        self.employees_table.horizontalHeader().setStretchLastSection(True)
+        self.employees_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.employees_table.setStyleSheet("""
+            QTableWidget {
+                border: none;
+                background-color: white;
+                gridline-color: #ddd;
+            }
+            QHeaderView::section {
+                background-color: #2c3e50;
+                color: white;
+                padding: 8px;
+                border: 1px solid #1a2530;
+                font-weight: bold;
+            }
+            QTableWidget::item {
+                padding: 5px;
+            }
+            QTableWidget::item:selected {
+                background-color: #3498db;
+                color: white;
+            }
+        """)
+        employees_layout.addWidget(self.employees_table)
+        
+        # Buttons
+        buttons_layout = QHBoxLayout()
+        
+        add_employee_button = ModernButton("إضافة موظف جديد", color="#2ecc71")
+        add_employee_button.clicked.connect(self.add_employee)
+        buttons_layout.addWidget(add_employee_button)
+        
+        refresh_button = ModernButton("تحديث البيانات", color="#3498db")
+        refresh_button.clicked.connect(self.load_employees)
+        buttons_layout.addWidget(refresh_button)
+        
+        employees_layout.addLayout(buttons_layout)
+        employees_group.setLayout(employees_layout)
+        layout.addWidget(employees_group)
+        
+        self.employees_tab.setLayout(layout)
+        
+        # Load employees data
+        self.load_employees()
+
+    def load_employees(self):
+        """Load employees data for this branch with security restrictions"""
+        try:
+            headers = {"Authorization": f"Bearer {self.token}"}
+            response = requests.get(
+                f"{self.api_url}/branches/{self.branch_id}/employees/",
+                headers=headers
+            )
+            
+            if response.status_code == 200:
+                employees = response.json()
+                self.employees_table.setRowCount(len(employees))
+                
+                for row, employee in enumerate(employees):
+                    # Employee ID and Role
+                    employee_id = employee.get("id")
+                    employee_role = employee.get("role", "employee")
+                    is_manager = employee_role == "branch_manager"
+                    is_current_user = str(employee_id) == str(self.user_id)
+
+                    # Username
+                    username_item = QTableWidgetItem(employee.get("username", ""))
+                    self.employees_table.setItem(row, 0, username_item)
+                    
+                    # Role (display Arabic text)
+                    role_text = "مدير فرع" if is_manager else "موظف"
+                    role_item = QTableWidgetItem(role_text)
+                    self.employees_table.setItem(row, 1, role_item)
+                    
+                    # Status
+                    status_item = QTableWidgetItem("نشط")
+                    status_color = QColor("#27ae60") if employee.get("active", True) else QColor("#e74c3c")
+                    status_item.setForeground(status_color)
+                    self.employees_table.setItem(row, 2, status_item)
+                    
+                    # Creation date
+                    date_item = QTableWidgetItem(employee.get("created_at", ""))
+                    self.employees_table.setItem(row, 3, date_item)
+                    
+                    # Actions
+                    actions_widget = QWidget()
+                    actions_layout = QHBoxLayout(actions_widget)
+                    actions_layout.setContentsMargins(0, 0, 0, 0)
+                    
+                    # Edit Button
+                    edit_button = QPushButton("تعديل")
+                    edit_button.setStyleSheet("""
+                        QPushButton {
+                            background-color: #3498db;
+                            color: white;
+                            border-radius: 3px;
+                            padding: 3px;
+                        }
+                        QPushButton:disabled {
+                            background-color: #95a5a6;
+                        }
+                        QPushButton:hover:!disabled {
+                            background-color: #2980b9;
+                        }
+                    """)
+                    
+                    # Delete Button
+                    delete_button = QPushButton("حذف")
+                    delete_button.setStyleSheet("""
+                        QPushButton {
+                            background-color: #e74c3c;
+                            color: white;
+                            border-radius: 3px;
+                            padding: 3px;
+                        }
+                        QPushButton:disabled {
+                            background-color: #95a5a6;
+                        }
+                        QPushButton:hover:!disabled {
+                            background-color: #c0392b;
+                        }
+                    """)
+                    
+                    # Disable actions for managers and current user
+                    if is_manager or is_current_user:
+                        edit_button.setEnabled(False)
+                        delete_button.setEnabled(False)
+                        edit_button.setToolTip("غير مسموح بتعديل المديرين أو حسابك الخاص")
+                        delete_button.setToolTip("غير مسموح بحذف المديرين أو حسابك الخاص")
+                    else:
+                        edit_button.clicked.connect(lambda _, e=employee: self.edit_employee(e))
+                        delete_button.clicked.connect(lambda _, e=employee: self.delete_employee(e))
+                    
+                    actions_layout.addWidget(edit_button)
+                    actions_layout.addWidget(delete_button)
+                    self.employees_table.setCellWidget(row, 4, actions_widget)
+                    
+            else:
+                self.load_placeholder_employees()
+                QMessageBox.warning(self, "خطأ", f"فشل في تحميل البيانات: {response.status_code}")
+                
+        except Exception as e:
+            print(f"Error loading employees: {e}")
+            self.load_placeholder_employees()
+            QMessageBox.critical(self, "خطأ", "تعذر الاتصال بالخادم")            

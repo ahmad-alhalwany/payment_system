@@ -8,8 +8,12 @@ from ui.branch_manager_dashboard import BranchManagerDashboard
 from ui.user_search import UserSearchDialog
 from login_fixed import LoginWindow
 from dotenv import load_dotenv
+from config import setup_environment
 
-if __name__ == "__main__":
+def main():
+    # Set up environment variables
+    setup_environment()
+
     app = QApplication(sys.argv)
     load_dotenv()
     # Set application-wide font for Arabic support
@@ -128,3 +132,6 @@ if __name__ == "__main__":
         sys.exit(app.exec())
     else:
         sys.exit()  # Exit if login was not successful
+
+if __name__ == "__main__":
+    main()

@@ -175,7 +175,8 @@ class AddBranchDialog(QDialog):
             "name": self.branch_name_input.text(),
             "location": self.branch_location_input.text(),
             "governorate": self.branch_governorate_combo.currentText(),
-            "status": "active" if self.branch_status_combo.currentText() == "نشط" else "inactive"
+            "status": "active" if self.branch_status_combo.currentText() == "نشط" else "inactive",
+            "tax_rate": 0.0  # Default tax rate, will be managed separately
         }
         
         try:
@@ -208,6 +209,7 @@ class EditBranchDialog(QDialog):
         self.branch_data = branch_data
         self.token = token
         self.api_url = os.environ["API_URL"]
+        self.branch_id = branch_data["id"]
         
         self.setWindowTitle("تعديل الفرع")
         self.setGeometry(300, 300, 400, 300)
@@ -316,12 +318,17 @@ class EditBranchDialog(QDialog):
             "name": self.branch_name_input.text(),
             "location": self.branch_location_input.text(),
             "governorate": self.branch_governorate_combo.currentText(),
-            "status": "active" if self.branch_status_combo.currentText() == "نشط" else "inactive"
+            "status": "active" if self.branch_status_combo.currentText() == "نشط" else "inactive",
+            "tax_rate": self.branch_data.get("tax_rate", 0.0)  # Preserve existing tax rate
         }
         
         try:
             headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
-            response = requests.put(f"{self.api_url}/branches/{self.branch_id_input.text()}", json=data, headers=headers)
+            response = requests.put(
+                f"{self.api_url}/branches/{self.branch_id}",
+                json=data,
+                headers=headers
+            )
             
             if response.status_code == 200:
                 QMessageBox.information(self, "نجاح", "تم تحديث الفرع بنجاح")

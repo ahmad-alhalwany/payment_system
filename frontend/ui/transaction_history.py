@@ -30,7 +30,7 @@ class TransactionHistory(QWidget):
         # Set up refresh timer (every 2 minutes)
         self.refresh_timer = QTimer(self)
         self.refresh_timer.timeout.connect(self.load_transactions)
-        self.refresh_timer.start(120000)  # 2 minutes in milliseconds
+        self.refresh_timer.start(30000)  # 2 minutes in milliseconds
     
     def setup_ui(self):
         """Set up the UI components."""
