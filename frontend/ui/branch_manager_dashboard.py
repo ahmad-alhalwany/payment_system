@@ -51,7 +51,7 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
         # Add timer for auto-refreshing transactions
         self.transaction_timer = QTimer(self)
         self.transaction_timer.timeout.connect(self.load_recent_transactions)
-        self.transaction_timer.start(30000)  # 5000 ms = 5 seconds
+        self.transaction_timer.start(120000)  # 5000 ms = 5 seconds
         
         self.setWindowTitle("لوحة تحكم مدير الفرع - نظام التحويلات المالية")
         self.setGeometry(100, 100, 1200, 800)
@@ -343,9 +343,7 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
             
             if response.status_code == 200:
                 branch_data = response.json()
-                print(f"Branch data received: {branch_data}")  # Debug print
                 financial = branch_data.get("financial_stats", {})
-                print(f"Financial stats: {financial}")  # Debug print
                 
                 # Syrian Pounds Balance
                 syp_balance = financial.get("available_balance_syp", financial.get("available_balance", 0))

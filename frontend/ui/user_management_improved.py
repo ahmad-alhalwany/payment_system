@@ -554,8 +554,6 @@ class AddEmployeeDialog(QDialog):
         try:
             # Ensure token is properly formatted with Bearer prefix
             headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
-            # print(f"Using token: {self.token}")
-            # print(f"Sending data: {data}")
             
             # Use /users/ endpoint instead of /register/ as it has the same functionality but with better error handling
             response = requests.post(

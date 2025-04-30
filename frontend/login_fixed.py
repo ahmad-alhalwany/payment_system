@@ -154,7 +154,6 @@ class LoginWindow(QDialog):
                 self.token = data.get("token")
                 self.username = data.get("username")
                 
-                print(f"Login successful: role={self.user_role}, branch_id={self.branch_id}, user_id={self.user_id}")
 
                 # Show "Create User" button for admin and branch manager
                 if self.user_role in ["director", "branch_manager"]:

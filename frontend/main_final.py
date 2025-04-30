@@ -105,7 +105,6 @@ def main():
             window = DirectorDashboard(token=token)
             window.setWindowTitle("لوحة تحكم المدير - نظام التحويلات المالية")
         elif user_role == "branch_manager":
-            print(f"Creating BranchManagerDashboard with branch_id={branch_id}, token={token}")
             window = BranchManagerDashboard(
                 branch_id=branch_id,
                 token=token,

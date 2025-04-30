@@ -40,7 +40,7 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
         # Add timer for auto-refreshing transactions
         self.transaction_timer = QTimer(self)
         self.transaction_timer.timeout.connect(self.load_recent_transactions)
-        self.transaction_timer.start(30000)  # 5000 ms = 5 seconds
+        self.transaction_timer.start(120000)  # 5000 ms = 5 seconds
         
         self.setWindowTitle("لوحة تحكم المدير")
         self.setGeometry(100, 100, 1200, 800)
@@ -1273,9 +1273,6 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
         
         layout = QVBoxLayout()
         
-        # Create the inventory tab widget with token
-        print(f"\n=== Setting up Inventory Tab in Dashboard ===")
-        print(f"Token available: {'Yes' if self.token else 'No'}")
         self.inventory_widget = InventoryTab(token=self.token, parent=self)
         layout.addWidget(self.inventory_widget)
         

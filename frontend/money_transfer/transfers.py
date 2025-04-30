@@ -387,13 +387,7 @@ class TransferCore:
                 # Calculate tax amount based ONLY on the benefited amount
                 tax_amount = benefited_amount * (tax_rate / 100)
                 
-                # For logging purposes
-                print(f"Base amount: {base_amount}")
-                print(f"Benefited amount: {benefited_amount}")
-                print(f"Tax rate: {tax_rate}%")
-                print(f"Tax amount: {tax_amount}")
             else:
-                print(f"Failed to get branch tax rate: {response.status_code}")
                 error_msg = "Failed to get tax rate from server"
                 if response.text:
                     try:
@@ -460,8 +454,6 @@ class TransferCore:
         data = self.prepare_transfer_data()
         data["status"] = "processing"
         
-        # Debug print
-        print("Data being sent:", data)
         
         try:
             headers = {"Authorization": f"Bearer {self.user_token}"} if self.user_token else {}

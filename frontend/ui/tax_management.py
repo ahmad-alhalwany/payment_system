@@ -7,6 +7,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt
 import os
 from ui.custom_widgets import ModernGroupBox, ModernButton
+from config import get_api_url
 
 class TaxManagementDialog(QDialog):
     """Dialog for managing tax rates."""
@@ -15,7 +16,7 @@ class TaxManagementDialog(QDialog):
         super().__init__(parent)
         self.branch_data = branch_data
         self.token = token
-        self.api_url = os.environ.get("API_URL", "http://localhost:8000")
+        self.api_url = get_api_url()
         
         self.setWindowTitle("إدارة الضرائب")
         self.setGeometry(300, 300, 400, 250)
@@ -166,7 +167,7 @@ class TaxManagement(QWidget):
     def __init__(self, token=None, parent=None):
         super().__init__(parent)
         self.token = token
-        self.api_url = os.environ["API_URL"]
+        self.api_url = get_api_url()
         self.branches = []
         
         self.setWindowTitle("إدارة الضرائب")

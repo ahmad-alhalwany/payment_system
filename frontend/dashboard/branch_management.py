@@ -12,8 +12,9 @@ from ui.custom_widgets import ModernGroupBox, ModernButton
 from ui.theme import Theme
 import requests
 from ui.tax_management import TaxManagementDialog
+from config import get_api_url
 
-API_BASE_URL = os.environ.get("API_URL", "http://localhost:8000")
+API_BASE_URL = get_api_url()
 
 class BranchManagementMixin:
     """Mixin handling all branch-related operations"""

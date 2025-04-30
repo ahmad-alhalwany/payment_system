@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict, List
 from decimal import Decimal
 import logging
+from config import get_api_url
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -24,10 +25,7 @@ class InventoryTab(QWidget):
     def __init__(self, token: Optional[str] = None, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.token = token
-        self.api_url = os.environ.get("API_URL", "http://localhost:8000")
-        print("\n=== Initializing InventoryTab ===")
-        print(f"API URL: {self.api_url}")
-        print(f"Token present: {'Yes' if token else 'No'}")
+        self.api_url = get_api_url()
         
         # Initialize update flags
         self.is_updating = False
@@ -45,7 +43,7 @@ class InventoryTab(QWidget):
         # Setup update timer
         self.update_timer = QTimer()
         self.update_timer.timeout.connect(self.load_data)
-        self.update_timer.start(300000)  # Update every 5 minutes
+        self.update_timer.start(120000) 
         
         self.setup_ui()
         
@@ -91,7 +89,6 @@ class InventoryTab(QWidget):
         
         # Initialize data
         try:
-            print("\n=== Initializing UI Data ===")
             self.load_branches()
             self.load_data()
         except Exception as e:
@@ -345,11 +342,6 @@ class InventoryTab(QWidget):
                 
             headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
             
-            # Debug logging
-            print("\n=== Loading Tax Summary Data ===")
-            print(f"API URL: {self.api_url}/api/transactions/tax_summary/")
-            print(f"Params: {params}")
-            print(f"Headers: {headers}")
             
             # Make API request for transactions with tax info
             response = requests.get(
@@ -359,11 +351,9 @@ class InventoryTab(QWidget):
                 timeout=30  # Added timeout
             )
             
-            print(f"Response Status Code: {response.status_code}")
             
             if response.status_code == 200:
                 data = response.json()
-                print(f"Received Data: {data}")
                 self._process_tax_data(data)
                 self.status_label.setText("تم تحديث البيانات بنجاح")
             else:
@@ -388,7 +378,6 @@ class InventoryTab(QWidget):
     def _process_tax_data(self, data):
         """Process tax data with optimized performance."""
         try:
-            print("\n=== Processing Tax Data ===")
             
             # Disable updates while processing
             self.tax_table.setUpdatesEnabled(False)
@@ -400,15 +389,9 @@ class InventoryTab(QWidget):
             total_tax = float(data.get('total_tax_amount', 0))
             total_transactions = data.get('total_transactions', 0)
             
-            print(f"Total Amount: {total_amount}")
-            print(f"Total Benefited: {total_benefited}")
-            print(f"Total Tax: {total_tax}")
-            print(f"Total Transactions: {total_transactions}")
-            
             # Calculate average tax rate
             avg_tax_rate = (total_tax / total_benefited * 100) if total_benefited > 0 else 0
             
-            print(f"Average Tax Rate: {avg_tax_rate}%")
             
             self.tax_collected_label.setText(f"{total_tax:,.2f}")
             self.transactions_count_label.setText(f"{total_transactions:,}")
@@ -417,12 +400,9 @@ class InventoryTab(QWidget):
             
             # Update tax table
             branch_summary = data.get('branch_summary', [])
-            print(f"\nBranch Summary Count: {len(branch_summary)}")
             self.tax_table.setRowCount(len(branch_summary))
             
             for i, branch in enumerate(branch_summary):
-                print(f"\nProcessing Branch {i + 1}:")
-                print(branch)
                 
                 items = [
                     branch.get('branch_name', ''),
@@ -444,13 +424,10 @@ class InventoryTab(QWidget):
                     
             # Update transactions table
             transactions = data.get('transactions', [])
-            print(f"\nTransactions Count: {len(transactions)}")
             self.transactions_table.setRowCount(len(transactions))
             
             for i, tx in enumerate(transactions):
-                print(f"\nProcessing Transaction {i + 1}:")
-                print(tx)
-                
+
                 # Get status color and text
                 status = tx.get('status', '')
                 status_color = self._get_status_color(status)
@@ -490,7 +467,6 @@ class InventoryTab(QWidget):
             # Force refresh
             self.tax_table.viewport().update()
             self.transactions_table.viewport().update()
-            print("\n=== Tax Data Processing Complete ===")
 
     def _handle_api_error(self, response):
         """Handle API error responses with improved error reporting."""
@@ -619,12 +595,10 @@ class InventoryTab(QWidget):
     def load_branches(self):
         """Load branches for the branch filter dropdown."""
         try:
-            print("\n=== Loading Branches ===")
             if hasattr(self, 'status_label'):
                 self.status_label.setText("جاري تحميل الفروع...")
             
             headers = self._get_auth_headers()
-            print("Request Headers:", {k: v[:10] + '...' if k == 'Authorization' else v for k, v in headers.items()})
             
             response = requests.get(
                 f"{self.api_url}/branches/",
@@ -632,13 +606,11 @@ class InventoryTab(QWidget):
                 timeout=10
             )
             
-            print(f"Response Status Code: {response.status_code}")
             
             if response.status_code == 200:
                 data = response.json()
                 branches = data.get("branches", [])
                 
-                print(f"\nReceived {len(branches)} branches:")
                 
                 # Clear existing items except "All Branches"
                 self.branch_filter.clear()
@@ -652,9 +624,6 @@ class InventoryTab(QWidget):
                         branch_id = branch.get('id')
                         if branch_name and branch_id:
                             display_text = f"{branch_name} - {branch_gov}" if branch_gov else branch_name
-                            print(f"- Branch {branch_id}: {display_text}")
-                            print(f"  Allocated SYP: {branch.get('allocated_amount_syp', 0)}")
-                            print(f"  Allocated USD: {branch.get('allocated_amount_usd', 0)}")
                             self.branch_filter.addItem(display_text, branch_id)
                 
                 if hasattr(self, 'status_label'):
