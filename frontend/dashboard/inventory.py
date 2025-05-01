@@ -9,7 +9,6 @@ from PyQt6.QtCore import Qt, QDate, QTimer
 from ui.custom_widgets import ModernGroupBox, ModernButton
 from ui.theme import Theme
 import os
-from datetime import datetime, timedelta
 from typing import Optional, Dict, List
 from decimal import Decimal
 import logging
@@ -40,12 +39,20 @@ class InventoryTab(QWidget):
         self.total_profit_label = QLabel("0")
         self.avg_tax_label = QLabel("0%")
         
-        # Setup update timer
-        self.update_timer = QTimer()
-        self.update_timer.timeout.connect(self.load_data)
-        self.update_timer.start(120000) 
-        
         self.setup_ui()
+        
+        # Initialize data
+        try:
+            self.load_branches()
+        except Exception as e:
+            print(f"Error initializing UI data: {str(e)}")
+            self._handle_unexpected_error(e)
+        # Load initial data for the inventory tab
+        try:
+            self.load_data()
+        except Exception as e:
+            print(f"Error loading initial inventory data: {str(e)}")
+            self._handle_unexpected_error(e)
         
     def setup_ui(self):
         """Set up the UI components with optimized settings."""
@@ -87,14 +94,6 @@ class InventoryTab(QWidget):
             }}
         """)
         
-        # Initialize data
-        try:
-            self.load_branches()
-            self.load_data()
-        except Exception as e:
-            print(f"Error initializing UI data: {str(e)}")
-            self._handle_unexpected_error(e)
-        
     def _setup_title(self, layout: QVBoxLayout):
         """Set up the title section."""
         title = QLabel("المخزون والأرباح")
@@ -134,7 +133,7 @@ class InventoryTab(QWidget):
         
         # Apply filter button
         filter_button = ModernButton("تطبيق", color=Theme.SUCCESS)
-        filter_button.clicked.connect(self.load_data)
+        filter_button.clicked.connect(self._apply_filters)
         filter_layout.addWidget(filter_button)
         
         # Refresh button
@@ -378,6 +377,7 @@ class InventoryTab(QWidget):
     def _process_tax_data(self, data):
         """Process tax data with optimized performance."""
         try:
+            print("[DEBUG] Tax summary API response:", data)  # Debug printout
             
             # Disable updates while processing
             self.tax_table.setUpdatesEnabled(False)
@@ -675,6 +675,15 @@ class InventoryTab(QWidget):
             "pending": "قيد الانتظار"
         }
         return status_text.get(status.lower(), status)
+
+    def _apply_filters(self):
+        """Apply the selected filters and load data."""
+        try:
+            self.status_label.setText("جاري تطبيق الفلاتر...")
+            self.load_data()
+            self.status_label.setText("تم تطبيق الفلاتر بنجاح")
+        except Exception as e:
+            self._handle_unexpected_error(e)
 
     def update_tax_summary(self, data):
         """Update tax summary tables with new data"""

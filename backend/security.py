@@ -1,3 +1,4 @@
+import os
 from passlib.context import CryptContext
 from jose import jwt, JWTError
 from fastapi import Depends, HTTPException, status
@@ -6,7 +7,8 @@ from sqlalchemy.orm import Session
 from database import SessionLocal
 from models import User
 
-SECRET_KEY = "929b15e43fd8f1cf4df79d86eb93ca426ab58ae53386c7a91ac4adb45832773b"
+# Get secret key from environment variable with a fallback for development
+SECRET_KEY = os.getenv("SECRET_KEY", "929b15e43fd8f1cf4df79d86eb93ca426ab58ae53386c7a91ac4adb45832773b")
 ALGORITHM = "HS256"
 pwd_context = CryptContext(schemes=["sha256_crypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
@@ -28,7 +30,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
     )
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username: str = payload.get("sub")
+        username: str = payload.get("username")  # Changed from "sub" to "username"
         if username is None:
             raise credentials_exception
     except JWTError:

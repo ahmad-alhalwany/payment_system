@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, Boolean, Float, Text
+from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, Boolean, Float, Text, Index
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -54,6 +54,15 @@ class BranchFund(Base):
 
 class Transaction(Base):
     __tablename__ = "transactions"
+    
+    # Add indexes for commonly queried fields
+    __table_args__ = (
+        Index('idx_transaction_date', 'date'),
+        Index('idx_transaction_branch', 'branch_id'),
+        Index('idx_transaction_currency', 'currency'),
+        Index('idx_transaction_status', 'status'),
+        Index('idx_transaction_dates', 'date', 'branch_id', 'currency', 'status')
+    )
 
     id = Column(String, primary_key=True, index=True)
     sender = Column(String)

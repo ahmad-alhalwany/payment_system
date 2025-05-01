@@ -1394,12 +1394,6 @@ class MoneyTransferApp(QWidget, ReceiptPrinter, TransferCore):
                 # If called with table item
                 row = item.row()
 
-            # Check transaction status
-            status = self.transactions_table.item(row, 7).text()
-            if status != "مكتمل":
-                QMessageBox.warning(self, "تحذير", "لا يمكن طباعة الإيصال للتحويلات غير المؤكدة")
-                return
-
             # Get transaction ID and fetch complete data
             transaction_id = self.transactions_table.item(row, 0).text()
             headers = {"Authorization": f"Bearer {self.user_token}"} if self.user_token else {}
@@ -1407,37 +1401,30 @@ class MoneyTransferApp(QWidget, ReceiptPrinter, TransferCore):
 
             if response.status_code == 200:
                 transaction_details = response.json()
-                
-                # Clean amount string and convert to float
-                amount_str = self.transactions_table.item(row, 4).text().replace(',', '')  # Remove commas
-                
-                # Collect transaction data with phone numbers from server response
+                amount_str = self.transactions_table.item(row, 4).text().replace(',', '')
                 transaction_data = {
                     'id': transaction_id,
                     'date': self.transactions_table.item(row, 1).text(),
                     'sender': self.transactions_table.item(row, 2).text(),
-                    'sender_mobile': transaction_details.get('sender_mobile', ''),  # Get from server response
+                    'sender_mobile': transaction_details.get('sender_mobile', ''),
                     'receiver': self.transactions_table.item(row, 3).text(),
-                    'receiver_mobile': transaction_details.get('receiver_mobile', ''),  # Get from server response
-                    'amount': float(amount_str),  # Convert clean string to float
+                    'receiver_mobile': transaction_details.get('receiver_mobile', ''),
+                    'amount': float(amount_str),
                     'currency': self.transactions_table.item(row, 5).text(),
                     'receiver_governorate': self.transactions_table.item(row, 6).text(),
-                    'status': status,
+                    'status': self.transactions_table.item(row, 7).text(),
                     'employee_name': self.transactions_table.item(row, 8).text(),
                     'sending_branch_name': self.transactions_table.item(row, 9).text(),
                     'destination_branch_name': self.transactions_table.item(row, 10).text(),
                     'branch_governorate': self.transactions_table.item(row, 11).text(),
-                    'received_status': status,  # Match received_status field
-                    'received_by': self.full_name,  # Match received_by field
-                    'received_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),  # Match received_at field
+                    'received_status': self.transactions_table.item(row, 7).text(),
+                    'received_by': self.full_name,
+                    'received_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     'type': 'sent'
                 }
-
-                # Print the receipt using the standard print_receipt method
                 self.print_receipt(transaction_data)
             else:
                 QMessageBox.warning(self, "خطأ", "فشل في استرجاع بيانات التحويل الكاملة")
-
         except Exception as e:
             QMessageBox.warning(self, "خطأ في الطباعة", f"حدث خطأ أثناء تحضير البيانات للطباعة: {str(e)}")
 

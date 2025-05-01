@@ -126,19 +126,25 @@ def reset_database():
     """)
     
     conn.commit()
+    
+    # Add indexes for better performance
+    cursor.execute("CREATE INDEX idx_transactions_id ON transactions(id);")
+    cursor.execute("CREATE INDEX idx_transactions_sender ON transactions(sender);")
+    cursor.execute("CREATE INDEX idx_transactions_receiver ON transactions(receiver);")
+    cursor.execute("CREATE INDEX idx_transactions_status ON transactions(status);")
+    cursor.execute("CREATE INDEX idx_transaction_date ON transactions(date);")
+    cursor.execute("CREATE INDEX idx_transaction_branch ON transactions(branch_id);")
+    cursor.execute("CREATE INDEX idx_transaction_currency ON transactions(currency);")
+    cursor.execute("CREATE INDEX idx_transaction_dates ON transactions(date, branch_id, currency, status);")
+    cursor.execute("CREATE INDEX idx_transaction_destination ON transactions(destination_branch_id);")
+    cursor.execute("CREATE INDEX idx_transaction_employee ON transactions(employee_id);")
+    cursor.execute("CREATE INDEX idx_transaction_received ON transactions(received_by);")
+    cursor.execute("CREATE INDEX idx_transaction_composite ON transactions(branch_id, status, date);")
+    
+    conn.commit()
     conn.close()
     print("New database created with current schema")
 
-# ---
-# Recommended SQL commands to add indexes for better search performance:
-# Run these in your SQLite database (once) if you have a lot of data or want faster search:
-#
-# CREATE INDEX idx_transactions_id ON transactions(id);
-# CREATE INDEX idx_transactions_sender ON transactions(sender);
-# CREATE INDEX idx_transactions_receiver ON transactions(receiver);
-# CREATE INDEX idx_transactions_status ON transactions(status);
-# CREATE INDEX idx_transactions_date ON transactions(date);
-# ---
 
 if __name__ == "__main__":
     reset_database()
