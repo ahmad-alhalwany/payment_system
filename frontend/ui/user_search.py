@@ -4,7 +4,7 @@ from PyQt6.QtWidgets import (
     QHeaderView, QTabWidget, QWidget, QFormLayout, QDialogButtonBox, QTextEdit, QApplication
 )
 from PyQt6.QtGui import QFont, QColor
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtPrintSupport import QPrinter, QPrintDialog
 import requests
 from ui.custom_widgets import ModernGroupBox, ModernButton
@@ -14,6 +14,8 @@ from money_transfer.receipt_printer import ReceiptPrinter
 
 class UserSearchDialog(QDialog):
     """Dialog for searching and viewing user and transaction information."""
+    
+    search_performed = pyqtSignal(str)  # Signal for search results
     
     def __init__(self, token=None,  parent=None, received=False):
         super().__init__(parent)

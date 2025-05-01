@@ -377,7 +377,6 @@ class InventoryTab(QWidget):
     def _process_tax_data(self, data):
         """Process tax data with optimized performance."""
         try:
-            print("[DEBUG] Tax summary API response:", data)  # Debug printout
             
             # Disable updates while processing
             self.tax_table.setUpdatesEnabled(False)

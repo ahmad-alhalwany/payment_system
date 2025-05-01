@@ -5,11 +5,12 @@ from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
     QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView,
     QMessageBox, QDialog, QLineEdit, QFormLayout, QComboBox,
-    QCheckBox, QMenu, QDialogButtonBox, QPushButton, QStatusBar
+    QCheckBox, QMenu, QDialogButtonBox, QPushButton, QStatusBar,
+    QTableView
 )
 import os
 from PyQt6.QtGui import QFont, QColor, QAction
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QDate
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QDate, QAbstractTableModel, QModelIndex
 from datetime import datetime
 from ui.user_search import UserSearchDialog
 from ui.custom_widgets import ModernGroupBox, ModernButton
@@ -17,6 +18,210 @@ from utils.helpers import get_status_arabic, get_status_color
 from money_transfer.receipt_printer import ReceiptPrinter
 from money_transfer.transaction_details import TransactionDetailsDialog
 from money_transfer.transfers import TransferCore
+import time
+
+class TransactionTableModel(QAbstractTableModel):
+    """Efficient table model with virtual scrolling support"""
+    
+    HEADERS = [
+        "رقم التحويل", "التاريخ", "المرسل", "المستلم", "المبلغ", "العملة",
+        "محافظة المستلم", "الحالة", "النوع", "اسم الموظف", "الفرع المرسل",
+        "الفرع المستلم", "محافظة الفرع"
+    ]
+    
+    def __init__(self):
+        super().__init__()
+        self._data = []
+        self._cached_items = {}
+        
+    def rowCount(self, parent=QModelIndex()):
+        return len(self._data)
+        
+    def columnCount(self, parent=QModelIndex()):
+        return len(self.HEADERS)
+        
+    def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):
+        if orientation == Qt.Orientation.Horizontal and role == Qt.ItemDataRole.DisplayRole:
+            return self.HEADERS[section]
+        return None
+        
+    def data(self, index, role=Qt.ItemDataRole.DisplayRole):
+        if not index.isValid():
+            return None
+            
+        if role == Qt.ItemDataRole.DisplayRole:
+            row = index.row()
+            col = index.column()
+            
+            # Use caching for formatted data
+            cache_key = (row, col)
+            if cache_key in self._cached_items:
+                return self._cached_items[cache_key]
+            
+            # Get raw data
+            if row >= len(self._data):
+                return None
+            
+            transaction = self._data[row]
+            value = self._get_column_data(transaction, col)
+            
+            # Cache the formatted value
+            self._cached_items[cache_key] = value
+            return value
+            
+        elif role == Qt.ItemDataRole.BackgroundRole:
+            # Handle status colors for the status column
+            if index.column() == 7:  # Status column
+                status = self._data[index.row()].get("status", "")
+                return get_status_color(status)
+                
+        return None
+        
+    def _get_column_data(self, transaction, col):
+        """Get formatted data for a specific column"""
+        try:
+            if col == 0:  # ID
+                return str(transaction.get("id", ""))
+            elif col == 1:  # Date
+                return self._format_date(transaction.get("date", ""))
+            elif col == 2:  # Sender
+                return transaction.get("sender", "")
+            elif col == 3:  # Receiver
+                return transaction.get("receiver", "")
+            elif col == 4:  # Amount
+                amount = transaction.get("amount", 0)
+                return f"{float(amount):,.2f}" if amount else "0.00"
+            elif col == 5:  # Currency
+                return transaction.get("currency", "")
+            elif col == 6:  # Receiver Governorate
+                return transaction.get("receiver_governorate", "")
+            elif col == 7:  # Status
+                return get_status_arabic(transaction.get("status", ""))
+            elif col == 8:  # Type
+                return self._get_transaction_type(transaction)
+            elif col == 9:  # Employee Name
+                return transaction.get("employee_name", "")
+            elif col == 10:  # Sending Branch
+                return transaction.get("sending_branch_name", "")
+            elif col == 11:  # Destination Branch
+                return transaction.get("destination_branch_name", "")
+            elif col == 12:  # Branch Governorate
+                return transaction.get("branch_governorate", "")
+        except Exception as e:
+            print(f"Error formatting column {col}: {e}")
+            return ""
+            
+    def _format_date(self, date_str):
+        """Format date string"""
+        try:
+            date_obj = datetime.strptime(date_str, "%Y-%m-%d")
+            return date_obj.strftime("%Y-%m-%d")
+        except:
+            return date_str
+            
+    def _get_transaction_type(self, transaction):
+        """Determine transaction type"""
+        if transaction.get("type") == "sent":
+            return "↑ صادر"
+        elif transaction.get("type") == "received":
+            return "↓ وارد"
+        return "غير معروف"
+        
+    def update_data(self, new_data):
+        """Update model data efficiently"""
+        self.beginResetModel()
+        self._data = new_data
+        self._cached_items.clear()
+        self.endResetModel()
+        
+    def get_transaction(self, row):
+        """Get transaction data for a specific row"""
+        if 0 <= row < len(self._data):
+            return self._data[row]
+        return None
+
+class SearchManager:
+    """Manages efficient search and filtering operations for transactions."""
+    
+    def __init__(self):
+        self._search_cache = {}
+        self._filter_cache = {}
+        self._last_search_time = 0
+        self._search_throttle = 0.3  # 300ms throttle
+        
+    def search_transactions(self, transactions, search_term, search_fields=None):
+        """Efficiently search transactions with caching and throttling."""
+        if not search_term:
+            return transactions
+            
+        # Use default search fields if none specified
+        if search_fields is None:
+            search_fields = ['id', 'sender', 'receiver', 'sender_mobile', 'receiver_mobile']
+            
+        # Create cache key
+        cache_key = (search_term, tuple(sorted(search_fields)))
+        
+        # Check cache first
+        if cache_key in self._search_cache:
+            return self._search_cache[cache_key]
+            
+        # Throttle searches
+        current_time = time.time()
+        if current_time - self._last_search_time < self._search_throttle:
+            return self._search_cache.get(cache_key, transactions)
+            
+        self._last_search_time = current_time
+        
+        # Perform search
+        search_term = search_term.lower()
+        results = []
+        
+        for transaction in transactions:
+            for field in search_fields:
+                value = str(transaction.get(field, '')).lower()
+                if search_term in value:
+                    results.append(transaction)
+                    break
+                    
+        # Cache results
+        self._search_cache[cache_key] = results
+        return results
+        
+    def filter_transactions(self, transactions, filters):
+        """Efficiently filter transactions with caching."""
+        if not filters:
+            return transactions
+            
+        # Create cache key
+        cache_key = tuple(sorted(filters.items()))
+        
+        # Check cache first
+        if cache_key in self._filter_cache:
+            return self._filter_cache[cache_key]
+            
+        # Apply filters
+        filtered = transactions
+        for field, value in filters.items():
+            if value == "all":
+                continue
+            filtered = [t for t in filtered if str(t.get(field, '')).lower() == str(value).lower()]
+            
+        # Cache results
+        self._filter_cache[cache_key] = filtered
+        return filtered
+        
+    def clear_cache(self):
+        """Clear search and filter caches."""
+        self._search_cache.clear()
+        self._filter_cache.clear()
+        
+    def update_cache(self, transactions):
+        """Update cache with new transaction data."""
+        self.clear_cache()
+        # Pre-compute common searches
+        self.search_transactions(transactions, '', ['id'])
+        self.search_transactions(transactions, '', ['sender'])
+        self.search_transactions(transactions, '', ['receiver'])
 
 class MoneyTransferApp(QWidget, ReceiptPrinter, TransferCore):
     """Money Transfer Application for the Internal Payment System."""
@@ -34,6 +239,9 @@ class MoneyTransferApp(QWidget, ReceiptPrinter, TransferCore):
         self.api_url = os.environ["API_URL"]
         self.per_page_outgoing = 18
         self.per_page_incoming = 18
+        
+        # Initialize search manager
+        self.search_manager = SearchManager()
         
         self.setWindowTitle("نظام تحويل الأموال الداخلي")
         self.setGeometry(100, 100, 800, 700)
@@ -835,18 +1043,27 @@ class MoneyTransferApp(QWidget, ReceiptPrinter, TransferCore):
         
         layout.addLayout(controls_layout)
         
-        # Transactions table
-        self.transactions_table = QTableWidget()
-        self.transactions_table.setColumnCount(13)
-        self.transactions_table.setHorizontalHeaderLabels([
-            "رقم التحويل", "التاريخ", "المرسل", "المستلم", "المبلغ", "العملة", 
-            "محافظة المستلم", "الحالة", "النوع", "اسم الموظف", "الفرع المرسل", 
-            "الفرع المستلم", "محافظة الفرع"
-        ])
-        self.transactions_table.horizontalHeader().setStretchLastSection(True)
-        self.transactions_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        # Create and set up the table model
+        self.transaction_model = TransactionTableModel()
+        
+        # Create QTableView instead of QTableWidget
+        self.transactions_table = QTableView()
+        self.transactions_table.setModel(self.transaction_model)
+        
+        # Configure the table view
+        self.transactions_table.setSelectionBehavior(QTableView.SelectionBehavior.SelectRows)
+        self.transactions_table.setSelectionMode(QTableView.SelectionMode.SingleSelection)
+        self.transactions_table.setAlternatingRowColors(True)
+        self.transactions_table.setSortingEnabled(True)
+        
+        # Set up the horizontal header
+        header = self.transactions_table.horizontalHeader()
+        header.setStretchLastSection(True)
+        header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        
+        # Style the table
         self.transactions_table.setStyleSheet("""
-            QTableWidget {
+            QTableView {
                 border: 1px solid #ddd;
                 border-radius: 5px;
                 background-color: white;
@@ -859,20 +1076,18 @@ class MoneyTransferApp(QWidget, ReceiptPrinter, TransferCore):
                 border: none;
                 font-weight: bold;
             }
-            QTableWidget::item {
+            QTableView::item {
                 padding: 5px;
                 border-bottom: 1px solid #f0f0f0;
             }
-            QTableWidget::item:selected {
+            QTableView::item:selected {
                 background-color: #3498db;
                 color: white;
             }
         """)
         
-        # Connect double-click event
-        self.transactions_table.itemDoubleClicked.connect(self.print_transaction)
-        
-        # Connect context menu event
+        # Connect signals
+        self.transactions_table.doubleClicked.connect(self.on_table_double_clicked)
         self.transactions_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.transactions_table.customContextMenuRequested.connect(self.show_context_menu)
         
@@ -880,7 +1095,6 @@ class MoneyTransferApp(QWidget, ReceiptPrinter, TransferCore):
         
         # Status bar
         status_layout = QHBoxLayout()
-        
         
         self.status_label = QLabel("جاهز")
         status_layout.addWidget(self.status_label)
@@ -907,6 +1121,13 @@ class MoneyTransferApp(QWidget, ReceiptPrinter, TransferCore):
         layout.addLayout(pagination_layout)
         
         self.transactions_tab.setLayout(layout)
+    
+    def on_table_double_clicked(self, index):
+        """Handle double click on table row"""
+        row = index.row()
+        transaction = self.transaction_model.get_transaction(row)
+        if transaction:
+            self.print_transaction(transaction["id"])
     
     def setup_notifications_tab(self):
         """Set up the notifications tab."""
@@ -1065,14 +1286,13 @@ class MoneyTransferApp(QWidget, ReceiptPrinter, TransferCore):
                 # Store transactions for filtering
                 self.all_transactions = transactions
                 
+                # Update search manager cache
+                self.search_manager.update_cache(transactions)
+                
                 # Reset pagination
                 self.current_page_outgoing = 1
-                self.filter_transactions()
                 
-                # Create a mapping of branch IDs to names for quick lookup
-                self.branch_id_to_name = {branch['id']: branch['name'] for branch in self.branches}
-                
-                # Apply current filter
+                # Update the model with the new data
                 self.filter_transactions()
                 
                 # Update status
@@ -1087,6 +1307,35 @@ class MoneyTransferApp(QWidget, ReceiptPrinter, TransferCore):
             QMessageBox.critical(self, "خطأ في الاتصال", 
                             "تعذر الاتصال بالخادم. الرجاء التحقق من اتصالك بالإنترنت وحالة الخادم.")
             
+    def filter_transactions(self):
+        """Filter transactions based on selected status."""
+        if not hasattr(self, 'all_transactions'):
+            return
+        
+        # Get current filters
+        filters = {
+            'status': self.status_filter.currentData()
+        }
+        
+        # Apply filters using search manager
+        filtered_transactions = self.search_manager.filter_transactions(self.all_transactions, filters)
+        
+        # Pagination calculations
+        self.total_pages_outgoing = max(1, (len(filtered_transactions) + self.per_page_outgoing - 1) // self.per_page_outgoing)
+        start_idx = (self.current_page_outgoing - 1) * self.per_page_outgoing
+        end_idx = start_idx + self.per_page_outgoing
+        paginated_transactions = filtered_transactions[start_idx:end_idx]
+        
+        # Update the model with filtered and paginated data
+        self.transaction_model.update_data(paginated_transactions)
+        
+        # Update count label and pagination controls
+        self.count_label.setText(
+            f"عدد التحويلات: {len(filtered_transactions)} "
+            f"(الصفحة {self.current_page_outgoing}/{self.total_pages_outgoing})"
+        )
+        self.update_pagination_controls_outgoing()
+
     def refresh_data(self):
         """Refresh all data in the application."""
         self.load_transactions()
@@ -1145,91 +1394,6 @@ class MoneyTransferApp(QWidget, ReceiptPrinter, TransferCore):
             "failed": QColor(255, 200, 200)  # Light red
         }
         return status_colors.get(status, QColor(255, 255, 255))  # White default
-    
-    def filter_transactions(self):
-        """Filter transactions based on selected status."""
-        if not hasattr(self, 'all_transactions'):
-            return
-        
-        selected_status = self.status_filter.currentData()
-        
-        if selected_status == "all":
-            filtered_transactions = self.all_transactions
-        else:
-            filtered_transactions = [t for t in self.all_transactions if t.get("status", "") == selected_status]
-        
-        # Pagination calculations
-        self.total_pages_outgoing = max(1, (len(filtered_transactions) + self.per_page_outgoing - 1) // self.per_page_outgoing)
-        start_idx = (self.current_page_outgoing - 1) * self.per_page_outgoing
-        end_idx = start_idx + self.per_page_outgoing
-        paginated_transactions = filtered_transactions[start_idx:end_idx]
-        
-        # Update table
-        self.transactions_table.setRowCount(len(paginated_transactions))
-        
-        for i, transaction in enumerate(paginated_transactions):
-            # Set all columns IN ORDER
-            self.transactions_table.setItem(i, 0, QTableWidgetItem(str(transaction.get("id", ""))))  # Col 0
-            self.transactions_table.setItem(i, 1, QTableWidgetItem(self.format_date(transaction.get("date", ""))))  # Col 1
-            self.transactions_table.setItem(i, 2, QTableWidgetItem(transaction.get("sender", "")))  # Col 2
-            self.transactions_table.setItem(i, 3, QTableWidgetItem(transaction.get("receiver", "")))  # Col 3
-            self.transactions_table.setItem(i, 4, QTableWidgetItem(self.format_amount(transaction.get("amount", 0))))  # Col 4
-            self.transactions_table.setItem(i, 5, QTableWidgetItem(transaction.get("currency", "")))  # Col 5
-            self.transactions_table.setItem(i, 6, QTableWidgetItem(transaction.get("receiver_governorate", "")))  # Col 6
-            
-            # Status - Col 7
-            status = transaction.get("status", "pending")
-            status_item = QTableWidgetItem(get_status_arabic(status))
-            status_item.setBackground(get_status_color(status))
-            self.transactions_table.setItem(i, 7, status_item)
-            
-            # Type - Col 8
-            type_item = self.create_type_item(transaction)
-            self.transactions_table.setItem(i, 8, type_item)
-            
-            # Remaining columns
-            self.transactions_table.setItem(i, 9, QTableWidgetItem(transaction.get("employee_name", "")))  # Col 9
-            self.transactions_table.setItem(i, 10, QTableWidgetItem(transaction.get("sending_branch_name", "غير معروف")))  # Col 10
-            self.transactions_table.setItem(i, 11, QTableWidgetItem(transaction.get("destination_branch_name", "غير معروف")))  # Col 11
-            self.transactions_table.setItem(i, 12, QTableWidgetItem(transaction.get("branch_governorate", "")))  # Col 12
-        
-        self.count_label.setText(
-            f"عدد التحويلات: {len(filtered_transactions)} "
-            f"(الصفحة {self.current_page_outgoing}/{self.total_pages_outgoing})"
-        )
-        self.update_pagination_controls_outgoing()
-
-
-    # Helper methods
-    def format_date(self, date_str):
-        try:
-            return datetime.strptime(date_str, "%Y-%m-%d").strftime("%Y-%m-%d")
-        except:
-            return date_str
-
-    def format_amount(self, amount):
-        return f"{float(amount):,.2f}" if amount else "0.00"
-
-    def create_type_item(self, transaction):
-        transfer_type = ""
-        color = QColor()
-        
-        # For outgoing transactions
-        if transaction.get("branch_id") == self.branch_id:
-            transfer_type = "↑ صادر"  # Outgoing
-            color = QColor(0, 150, 0)  # Dark green
-        # For incoming transactions (shouldn't appear in outgoing tab)
-        elif transaction.get("destination_branch_id") == self.branch_id:
-            transfer_type = "↓ وارد"  # Incoming
-            color = QColor(150, 0, 0)  # Dark red
-        else:
-            transfer_type = "غير معروف"
-            color = QColor(100, 100, 100)
-        
-        item = QTableWidgetItem(transfer_type)
-        item.setForeground(color)
-        item.setFont(QFont("Arial", 12, QFont.Weight.Bold))
-        return item
     
     def show_transaction_details(self, item):
         """Show transaction details when an item is double-clicked."""
@@ -1377,8 +1541,16 @@ class MoneyTransferApp(QWidget, ReceiptPrinter, TransferCore):
                             "تعذر الاتصال بالخادم. الرجاء التحقق من اتصالك بالإنترنت وحالة الخادم.")
     
     def open_search_dialog(self):
-        """Open the search dialog."""
+        """Open the search dialog with optimized search functionality."""
         search_dialog = UserSearchDialog(token=self.user_token, parent=self)
+        
+        # Connect to search manager for efficient searching
+        def perform_search(search_term):
+            if not hasattr(self, 'all_transactions'):
+                return []
+            return self.search_manager.search_transactions(self.all_transactions, search_term)
+            
+        search_dialog.search_performed.connect(perform_search)
         search_dialog.exec()
 
     def print_transaction(self, item):
