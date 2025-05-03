@@ -19,16 +19,7 @@ from utils.helpers import get_status_arabic, get_status_color
 from ui.menu_auth import MenuAuthMixin
 from branch_dashboard.employees_tab import EmployeesTabMixin
 from branch_dashboard.reports_tab import ReportsTabMixin
-import logging
 import time
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    filename='branch_manager.log'
-)
-logger = logging.getLogger(__name__)
 
 class WorkerThread(QThread):
     finished = pyqtSignal(object)
@@ -781,14 +772,14 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
             self.statusBar().showMessage("تم تحديث البيانات بنجاح", 3000)
             
         except Exception as e:
-            logger.error(f"Error refreshing dashboard: {str(e)}")
+            print(f"Error refreshing dashboard: {str(e)}")
             self.statusBar().showMessage("حدث خطأ أثناء تحديث البيانات", 5000)
             # Attempt partial refresh
             try:
                 self.load_financial_status()
                 self.load_recent_transactions()
             except Exception as fallback_error:
-                logger.error(f"Fallback refresh failed: {fallback_error}")
+                print(f"Fallback refresh failed: {fallback_error}")
     
     def load_branch_info(self):
         """Load branch information."""
@@ -813,7 +804,7 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
                 self.branch_location_label.setText("")
                 self.branch_governorate_label.setText("")
         except Exception as e:
-            logger.error(f"Error loading branch info: {e}")
+            print(f"Error loading branch info: {e}")
             # Use empty values instead of hardcoded examples
             self.branch_name_label.setText("الفرع: ")
             self.branch_id_label.setText("")
@@ -836,7 +827,7 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
                 self.employees_count.setText("عدد الموظفين: 0")
                 self.active_employees.setText("الموظفين النشطين: 0")
         except Exception as e:
-            logger.error(f"Error loading employee stats: {e}")
+            print(f"Error loading employee stats: {e}")
             # For testing/demo, use placeholder data
             self.employees_count.setText("عدد الموظفين: 0")
             self.active_employees.setText("الموظفين النشطين: 0")
@@ -856,7 +847,7 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
                 self.transactions_count.setText("عدد التحويلات: 0")
                 self.transactions_amount.setText("إجمالي مبالغ التحويلات: 0 ليرة سورية")
         except Exception as e:
-            logger.error(f"Error loading transaction stats: {e}")
+            print(f"Error loading transaction stats: {e}")
             # For testing/demo, use placeholder data
             self.transactions_count.setText("عدد التحويلات: 0")
             self.transactions_amount.setText("إجمالي مبالغ التحويلات: 0 ليرة سورية")
@@ -897,10 +888,10 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
                     else:
                         break
                 except requests.Timeout:
-                    logger.error("Timeout while fetching outgoing transactions")
+                    print("Timeout while fetching outgoing transactions")
                     break
                 except Exception as e:
-                    logger.error(f"Error fetching outgoing transactions: {e}")
+                    print(f"Error fetching outgoing transactions: {e}")
                     break
 
             # Fetch incoming transactions with pagination
@@ -930,10 +921,10 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
                     else:
                         break
                 except requests.Timeout:
-                    logger.error("Timeout while fetching incoming transactions")
+                    print("Timeout while fetching incoming transactions")
                     break
                 except Exception as e:
-                    logger.error(f"Error fetching incoming transactions: {e}")
+                    print(f"Error fetching incoming transactions: {e}")
                     break
 
             # Sort all transactions by date descending
@@ -1008,7 +999,7 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
             self.next_button.setEnabled(self.current_page < self.total_pages)
 
         except Exception as e:
-            logger.error(f"Error loading transactions: {e}")
+            print(f"Error loading transactions: {e}")
             self.load_placeholder_transactions()
             self.page_label.setText("الصفحة: 1/1")
             self.prev_button.setEnabled(False)
@@ -1069,7 +1060,7 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
                             self.branch_id_to_name[branch_id] = branch_name
                             
                     except Exception as branch_error:
-                        logger.error(f"Error processing branch: {branch_error}")
+                        print(f"Error processing branch: {branch_error}")
                         continue
                 
                 # Update cache
@@ -1080,17 +1071,17 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
                 self.load_recent_transactions()
                 
             else:
-                logger.error(f"Failed to load branches. Status: {response.status_code}")
+                print(f"Failed to load branches. Status: {response.status_code}")
                 self.branch_id_to_name = {}
                 
         except requests.Timeout:
-            logger.error("Timeout while loading branches")
+            print("Timeout while loading branches")
             self.branch_id_to_name = {}
         except ValueError as e:
-            logger.error(f"JSON decode error: {str(e)}")
+            print(f"JSON decode error: {str(e)}")
             self.branch_id_to_name = {}
         except Exception as e:
-            logger.error(f"Unexpected error loading branches: {str(e)}")
+            print(f"Unexpected error loading branches: {str(e)}")
             self.branch_id_to_name = {}
             
     def create_transaction_type_item(self, transaction):
@@ -1273,7 +1264,7 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
                 else:
                     QMessageBox.warning(self, "خطأ", f"فشل حذف الموظف: {response.status_code}")
             except Exception as e:
-                logger.error(f"Error deleting employee: {e}")
+                print(f"Error deleting employee: {e}")
                 QMessageBox.warning(self, "خطأ", f"تعذر حذف الموظف: {str(e)}")
     
     def search_user(self):
@@ -1355,7 +1346,7 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
                 # For testing/demo, load placeholder data
                 self.load_placeholder_report(report_type)
         except Exception as e:
-            logger.error(f"Error generating report: {e}")
+            print(f"Error generating report: {e}")
             # For testing/demo, load placeholder data
             self.load_placeholder_report(report_type)
     
