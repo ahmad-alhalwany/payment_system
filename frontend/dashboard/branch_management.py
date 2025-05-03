@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (
 )
 
 from PyQt6.QtGui import QFont
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal
 from ui.branch_management_improved import AddBranchDialog, EditBranchDialog
 from ui.custom_widgets import ModernGroupBox, ModernButton
 from ui.theme import Theme
@@ -228,52 +228,28 @@ class BranchManagementMixin:
         self.branches_tab.setLayout(layout)
         
     def load_branches(self, force_refresh=False):
-        """Load branches from the API with optimized performance."""
+        """Load branches from the API with optimized performance using QThread."""
         try:
-            # Check cache first, unless force_refresh is True
             if not force_refresh:
                 cached_data = self.branch_cache.get('branches')
                 if cached_data:
                     self._update_branches_table(cached_data)
                     return
-            
-            headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
-            
-            # Get all branches in a single request with employee counts and tax rates
-            response = requests.get(
-                f"{API_BASE_URL}/branches/",
-                headers=headers,
-                params={
-                    "include_tax": True,
-                    "include_employee_count": True,
-                    "include_balances": True
-                }
-            )
-            
-            if response.status_code == 200:
-                response_data = response.json()
-                branches = response_data.get('branches', []) if isinstance(response_data, dict) else response_data
-                
-                # Cache the data
-                self.branch_cache.set('branches', branches)
-                
-                # Update table with batched processing
-                self._update_branches_table(branches)
-            else:
-                error_msg = f"فشل في تحميل الفروع: رمز الحالة {response.status_code}"
-                try:
-                    error_data = response.json()
-                    if "detail" in error_data:
-                        error_msg = f"{error_msg}\n{error_data['detail']}"
-                except:
-                    pass
-                QMessageBox.warning(self, "خطأ", error_msg)
-                
-        except requests.exceptions.ConnectionError as e:
-            QMessageBox.critical(self, "خطأ في الاتصال", f"خطأ في الاتصال بالخادم: {str(e)}")
+            # استخدم worker لجلب البيانات في الخلفية
+            self.branch_load_worker = BranchLoadWorker(API_BASE_URL, self.token)
+            self.branch_load_worker.branches_loaded.connect(self._on_branches_loaded)
+            self.branch_load_worker.error_occurred.connect(self._on_branches_error)
+            self.branch_load_worker.start()
         except Exception as e:
             QMessageBox.critical(self, "خطأ", f"حدث خطأ: {str(e)}")
-            
+
+    def _on_branches_loaded(self, branches):
+        self.branch_cache.set('branches', branches)
+        self._update_branches_table(branches)
+
+    def _on_branches_error(self, msg):
+        QMessageBox.warning(self, "خطأ", msg)
+
     def _update_branches_table(self, branches):
         """Update branches table with batched processing"""
         # Clear existing rows while preserving column widths
@@ -889,3 +865,41 @@ class BranchManagementMixin:
                     
         except Exception as e:
             QMessageBox.critical(self, "خطأ", f"حدث خطأ في قراءة بيانات الفرع: {str(e)}")
+
+class BranchLoadWorker(QThread):
+    branches_loaded = pyqtSignal(list)
+    error_occurred = pyqtSignal(str)
+    
+    def __init__(self, api_url, token):
+        super().__init__()
+        self.api_url = api_url
+        self.token = token
+    
+    def run(self):
+        import requests
+        try:
+            headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
+            response = requests.get(
+                f"{self.api_url}/branches/",
+                headers=headers,
+                params={
+                    "include_tax": True,
+                    "include_employee_count": True,
+                    "include_balances": True
+                }
+            )
+            if response.status_code == 200:
+                response_data = response.json()
+                branches = response_data.get('branches', []) if isinstance(response_data, dict) else response_data
+                self.branches_loaded.emit(branches)
+            else:
+                error_msg = f"فشل في تحميل الفروع: رمز الحالة {response.status_code}"
+                try:
+                    error_data = response.json()
+                    if "detail" in error_data:
+                        error_msg = f"{error_msg}\n{error_data['detail']}"
+                except:
+                    pass
+                self.error_occurred.emit(error_msg)
+        except Exception as e:
+            self.error_occurred.emit(str(e))

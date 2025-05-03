@@ -4,7 +4,7 @@ from PyQt6.QtWidgets import (
     QMessageBox, QDialog,
     QLineEdit, QFormLayout, QComboBox, QGroupBox,
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
 import os
 
 class ModernGroupBox(QGroupBox):
@@ -67,6 +67,57 @@ class ModernButton(QPushButton):
         g = max(0, int(color[2:4], 16) - 20)
         b = max(0, int(color[4:6], 16) - 20)
         return f"#{r:02x}{g:02x}{b:02x}"
+
+class AddBranchWorker(QThread):
+    finished = pyqtSignal(bool, str)
+    def __init__(self, api_url, token, data):
+        super().__init__()
+        self.api_url = api_url
+        self.token = token
+        self.data = data
+    def run(self):
+        try:
+            headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
+            response = requests.post(f"{self.api_url}/branches/", json=self.data, headers=headers)
+            if response.status_code in (200, 201):
+                self.finished.emit(True, "تم إضافة الفرع بنجاح")
+            else:
+                msg = f"فشل إضافة الفرع: رمز الحالة {response.status_code}"
+                try:
+                    error_data = response.json()
+                    if "detail" in error_data:
+                        msg = error_data["detail"]
+                except:
+                    pass
+                self.finished.emit(False, msg)
+        except Exception as e:
+            self.finished.emit(False, str(e))
+
+class EditBranchWorker(QThread):
+    finished = pyqtSignal(bool, str)
+    def __init__(self, api_url, token, branch_id, data):
+        super().__init__()
+        self.api_url = api_url
+        self.token = token
+        self.branch_id = branch_id
+        self.data = data
+    def run(self):
+        try:
+            headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
+            response = requests.put(f"{self.api_url}/branches/{self.branch_id}", json=self.data, headers=headers)
+            if response.status_code in (200, 201):
+                self.finished.emit(True, "تم تعديل الفرع بنجاح")
+            else:
+                msg = f"فشل تعديل الفرع: رمز الحالة {response.status_code}"
+                try:
+                    error_data = response.json()
+                    if "detail" in error_data:
+                        msg = error_data["detail"]
+                except:
+                    pass
+                self.finished.emit(False, msg)
+        except Exception as e:
+            self.finished.emit(False, str(e))
 
 class AddBranchDialog(QDialog):
     """Dialog for adding a new branch."""
@@ -146,9 +197,9 @@ class AddBranchDialog(QDialog):
         cancel_button.clicked.connect(self.reject)
         buttons_layout.addWidget(cancel_button)
         
-        save_button = ModernButton("حفظ", color="#2ecc71")
-        save_button.clicked.connect(self.save_branch)
-        buttons_layout.addWidget(save_button)
+        self.save_button = ModernButton("حفظ", color="#2ecc71")
+        self.save_button.clicked.connect(self.save_branch)
+        buttons_layout.addWidget(self.save_button)
         
         layout.addLayout(buttons_layout)
         
@@ -179,27 +230,18 @@ class AddBranchDialog(QDialog):
             "tax_rate": 0.0  # Default tax rate, will be managed separately
         }
         
-        try:
-            headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
-            response = requests.post(f"{self.api_url}/branches/", json=data, headers=headers)
-            
-            if response.status_code == 201 or response.status_code == 200:
-                QMessageBox.information(self, "نجاح", "تم إضافة الفرع بنجاح")
-                self.accept()
-            else:
-                error_msg = f"فشل إضافة الفرع: رمز الحالة {response.status_code}"
-                try:
-                    error_data = response.json()
-                    if "detail" in error_data:
-                        error_msg = error_data["detail"]
-                except:
-                    pass
-                
-                QMessageBox.warning(self, "خطأ", error_msg)
-        except Exception as e:
-            print(f"Error adding branch: {e}")
-            QMessageBox.critical(self, "خطأ في الاتصال", 
-                               "تعذر الاتصال بالخادم. الرجاء التحقق من اتصالك بالإنترنت وحالة الخادم.")
+        self.save_button.setEnabled(False)
+        self.worker = AddBranchWorker(self.api_url, self.token, data)
+        self.worker.finished.connect(self.on_save_finished)
+        self.worker.start()
+    
+    def on_save_finished(self, success, msg):
+        self.save_button.setEnabled(True)
+        if success:
+            QMessageBox.information(self, "نجاح", msg)
+            self.accept()
+        else:
+            QMessageBox.warning(self, "خطأ", msg)
 
 class EditBranchDialog(QDialog):
     """Dialog for editing a branch."""
@@ -293,9 +335,9 @@ class EditBranchDialog(QDialog):
         cancel_button.clicked.connect(self.reject)
         buttons_layout.addWidget(cancel_button)
         
-        save_button = ModernButton("حفظ", color="#2ecc71")
-        save_button.clicked.connect(self.save_branch)
-        buttons_layout.addWidget(save_button)
+        self.save_button = ModernButton("حفظ", color="#2ecc71")
+        self.save_button.clicked.connect(self.save_branch)
+        buttons_layout.addWidget(self.save_button)
         
         layout.addLayout(buttons_layout)
         
@@ -322,31 +364,18 @@ class EditBranchDialog(QDialog):
             "tax_rate": self.branch_data.get("tax_rate", 0.0)  # Preserve existing tax rate
         }
         
-        try:
-            headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
-            response = requests.put(
-                f"{self.api_url}/branches/{self.branch_id}",
-                json=data,
-                headers=headers
-            )
-            
-            if response.status_code == 200:
-                QMessageBox.information(self, "نجاح", "تم تحديث الفرع بنجاح")
-                self.accept()
-            else:
-                error_msg = f"فشل تحديث الفرع: رمز الحالة {response.status_code}"
-                try:
-                    error_data = response.json()
-                    if "detail" in error_data:
-                        error_msg = error_data["detail"]
-                except:
-                    pass
-                
-                QMessageBox.warning(self, "خطأ", error_msg)
-        except Exception as e:
-            print(f"Error updating branch: {e}")
-            QMessageBox.critical(self, "خطأ في الاتصال", 
-                               "تعذر الاتصال بالخادم. الرجاء التحقق من اتصالك بالإنترنت وحالة الخادم.")
+        self.save_button.setEnabled(False)
+        self.worker = EditBranchWorker(self.api_url, self.token, self.branch_data.get("id"), data)
+        self.worker.finished.connect(self.on_save_finished)
+        self.worker.start()
+    
+    def on_save_finished(self, success, msg):
+        self.save_button.setEnabled(True)
+        if success:
+            QMessageBox.information(self, "نجاح", msg)
+            self.accept()
+        else:
+            QMessageBox.warning(self, "خطأ", msg)
 
 # Add a BranchManagement class for compatibility
 class BranchManagement(QWidget):
