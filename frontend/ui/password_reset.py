@@ -1,6 +1,34 @@
 from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox
+from PyQt6.QtCore import QThread, pyqtSignal
 import requests
 import os
+
+class PasswordResetWorker(QThread):
+    finished = pyqtSignal(bool, str)
+    def __init__(self, api_url, token, username, new_password):
+        super().__init__()
+        self.api_url = api_url
+        self.token = token
+        self.username = username
+        self.new_password = new_password
+    def run(self):
+        try:
+            headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
+            response = requests.post(
+                f"{self.api_url}/reset-password/", 
+                json={
+                    "username": self.username,
+                    "new_password": self.new_password
+                },
+                headers=headers
+            )
+            if response.status_code == 200:
+                self.finished.emit(True, "تمت إعادة تعيين كلمة المرور بنجاح!")
+            else:
+                self.finished.emit(False, f"حدث خطأ أثناء إعادة تعيين كلمة المرور! الخطأ: {response.status_code} - {response.text}")
+        except Exception as e:
+            self.finished.emit(False, f"تعذر الاتصال بالخادم: {str(e)}")
+
 class PasswordResetDialog(QDialog):
     def __init__(self, is_admin=False, token=None):
         super().__init__()
@@ -67,35 +95,30 @@ class PasswordResetDialog(QDialog):
         """)
         layout.addWidget(self.reset_button)
 
+        self.loading_label = QLabel("جاري إعادة تعيين كلمة المرور...")
+        self.loading_label.setStyleSheet("color: #3498db; font-weight: bold;")
+        self.loading_label.setVisible(False)
+        layout.addWidget(self.loading_label)
+
         self.setLayout(layout)
 
     def reset_password(self):
-        """Reset the user's password."""
         username = self.username_input.text()
         new_password = self.new_password_input.text()
-
         if not username or not new_password:
             QMessageBox.warning(self, "خطأ", "يرجى ملء جميع الحقول!")
             return
-
-        try:
-            headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
-            
-            # Call the backend API to reset the password
-            api_url = os.environ["API_URL"]
-            response = requests.post(
-                f"{api_url}/reset-password/", 
-                json={
-                    "username": username,
-                    "new_password": new_password
-                },
-                headers=headers
-            )
-
-            if response.status_code == 200:
-                QMessageBox.information(self, "نجاح", "تمت إعادة تعيين كلمة المرور بنجاح!")
-                self.accept()
-            else:
-                QMessageBox.warning(self, "خطأ", f"حدث خطأ أثناء إعادة تعيين كلمة المرور! الخطأ: {response.status_code} - {response.text}")
-        except Exception as e:
-            QMessageBox.warning(self, "خطأ", f"تعذر الاتصال بالخادم: {str(e)}")
+        self.reset_button.setEnabled(False)
+        self.loading_label.setVisible(True)
+        api_url = os.environ["API_URL"]
+        self.worker = PasswordResetWorker(api_url, self.token, username, new_password)
+        self.worker.finished.connect(self.on_reset_finished)
+        self.worker.start()
+    def on_reset_finished(self, success, message):
+        self.loading_label.setVisible(False)
+        self.reset_button.setEnabled(True)
+        if success:
+            QMessageBox.information(self, "نجاح", message)
+            self.accept()
+        else:
+            QMessageBox.warning(self, "خطأ", message)
