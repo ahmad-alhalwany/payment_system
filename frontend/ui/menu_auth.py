@@ -1,5 +1,8 @@
-from PyQt6.QtWidgets import QMessageBox
+from PyQt6.QtWidgets import QMessageBox, QApplication
 from PyQt6.QtGui import QAction
+import sys
+import os
+import subprocess
 
 class MenuAuthMixin:
     """Mixin class containing menu and authentication functionality"""
@@ -35,8 +38,15 @@ class MenuAuthMixin:
         )
         
         if reply == QMessageBox.StandardButton.Yes:
-            self.close()  # Close current window
-            # Create new login window
-            from login_fixed import LoginWindow
-            self.login_window = LoginWindow()
-            self.login_window.show()
+            # Close all windows
+            for widget in QApplication.topLevelWidgets():
+                widget.close()
+            
+            # Get the current script path
+            script_path = os.path.abspath(sys.argv[0])
+            
+            # Start a new process with the same script
+            subprocess.Popen([sys.executable, script_path])
+            
+            # Exit the current process
+            sys.exit(0)

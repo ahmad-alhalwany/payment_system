@@ -1,6 +1,6 @@
-from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox, QComboBox, QProgressBar
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QFont
+from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox, QComboBox, QProgressBar, QHBoxLayout, QFrame
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize
+from PyQt6.QtGui import QFont, QIcon, QPixmap, QColor
 import requests
 import jwt
 import datetime
@@ -64,70 +64,136 @@ class LoginWindow(QDialog):
         super().__init__()
         
         self.setWindowTitle("تسجيل الدخول")
-        self.setGeometry(200, 200, 400, 300)
+        self.setGeometry(200, 200, 450, 500)  # Increased window size
         self.setStyleSheet("""
-            QWidget {
-                background-color: #f5f5f5;
+            QDialog {
+                background-color: #ffffff;
                 font-family: Arial;
             }
             QLabel {
-                color: #333;
+                color: #2c3e50;
                 font-size: 14px;
+                margin-bottom: 5px;
             }
             QPushButton {
                 background-color: #2c3e50;
                 color: white;
                 border-radius: 5px;
-                padding: 8px;
+                padding: 10px;
                 font-weight: bold;
+                font-size: 14px;
             }
             QPushButton:hover {
                 background-color: #34495e;
             }
             QLineEdit {
-                border: 1px solid #ccc;
+                border: 2px solid #e0e0e0;
                 border-radius: 5px;
-                padding: 8px;
+                padding: 10px;
                 background-color: white;
                 font-size: 14px;
+                margin-bottom: 10px;
+            }
+            QLineEdit:focus {
+                border: 2px solid #3498db;
             }
             QProgressBar {
                 border: 1px solid #ccc;
                 border-radius: 5px;
                 text-align: center;
                 background-color: white;
+                height: 10px;
+            }
+            QProgressBar::chunk {
+                background-color: #27ae60;
+                border-radius: 5px;
+            }
+            QFrame {
+                background-color: #f8f9fa;
+                border-radius: 10px;
+                padding: 20px;
+            }
+        """)
+
+        self.layout = QVBoxLayout()
+        self.layout.setSpacing(15)  # Add spacing between widgets
+        self.layout.setContentsMargins(30, 30, 30, 30)  # Add margins
+
+        # Create a frame for the content
+        content_frame = QFrame()
+        content_frame.setStyleSheet("""
+            QFrame {
+                background-color: #f8f9fa;
+                border-radius: 10px;
+                padding: 20px;
+            }
+        """)
+        content_layout = QVBoxLayout(content_frame)
+
+        # Logo or title
+        title = QLabel("نظام تحويل الأموال الداخلي")
+        title.setFont(QFont("Arial", 20, QFont.Weight.Bold))
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setStyleSheet("color: #2c3e50; margin-bottom: 30px;")
+        content_layout.addWidget(title)
+
+        # Username field
+        self.username_label = QLabel("اسم المستخدم:")
+        self.username_input = QLineEdit(self)
+        self.username_input.setPlaceholderText("أدخل اسم المستخدم")
+        content_layout.addWidget(self.username_label)
+        content_layout.addWidget(self.username_input)
+
+        # Password field with toggle button
+        self.password_label = QLabel("كلمة المرور:")
+        content_layout.addWidget(self.password_label)
+        
+        password_layout = QHBoxLayout()
+        password_layout.setSpacing(5)
+        
+        self.password_input = QLineEdit(self)
+        self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.password_input.setPlaceholderText("أدخل كلمة المرور")
+        password_layout.addWidget(self.password_input)
+        
+        self.toggle_password_button = QPushButton("👁️", self)
+        self.toggle_password_button.setFixedWidth(40)
+        self.toggle_password_button.setStyleSheet("""
+            QPushButton {
+                background-color: #f8f9fa;
+                color: #2c3e50;
+                border: 2px solid #e0e0e0;
+                border-radius: 5px;
+                padding: 10px;
+            }
+            QPushButton:hover {
+                background-color: #e9ecef;
+            }
+        """)
+        self.toggle_password_button.clicked.connect(self.toggle_password_visibility)
+        password_layout.addWidget(self.toggle_password_button)
+        
+        content_layout.addLayout(password_layout)
+
+        # Progress bar
+        self.progress_bar = QProgressBar(self)
+        self.progress_bar.setVisible(False)
+        self.progress_bar.setStyleSheet("""
+            QProgressBar {
+                border: 2px solid #e0e0e0;
+                border-radius: 5px;
+                text-align: center;
+                background-color: white;
+                height: 10px;
             }
             QProgressBar::chunk {
                 background-color: #27ae60;
                 border-radius: 5px;
             }
         """)
+        content_layout.addWidget(self.progress_bar)
 
-        self.layout = QVBoxLayout()
-
-        # Title
-        title = QLabel("نظام تحويل الأموال الداخلي")
-        title.setFont(QFont("Arial", 18, QFont.Weight.Bold))
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title.setStyleSheet("color: #2c3e50; margin-bottom: 20px;")
-        self.layout.addWidget(title)
-
-        self.username_label = QLabel("اسم المستخدم:")
-        self.username_input = QLineEdit(self)
-        self.layout.addWidget(self.username_label)
-        self.layout.addWidget(self.username_input)
-
-        self.password_label = QLabel("كلمة المرور:")
-        self.password_input = QLineEdit(self)
-        self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
-        self.layout.addWidget(self.password_label)
-        self.layout.addWidget(self.password_input)
-
-        # Add progress bar
-        self.progress_bar = QProgressBar(self)
-        self.progress_bar.setVisible(False)
-        self.layout.addWidget(self.progress_bar)
-
+        # Login button
         self.login_button = QPushButton("تسجيل الدخول")
         self.login_button.clicked.connect(self.check_login)
         self.login_button.setStyleSheet("""
@@ -135,25 +201,45 @@ class LoginWindow(QDialog):
                 background-color: #27ae60;
                 color: white;
                 border-radius: 5px;
-                padding: 10px;
+                padding: 12px;
                 font-weight: bold;
-                font-size: 14px;
+                font-size: 16px;
                 margin-top: 20px;
             }
             QPushButton:hover {
                 background-color: #2ecc71;
             }
+            QPushButton:pressed {
+                background-color: #219a52;
+            }
         """)
-        self.layout.addWidget(self.login_button)
+        content_layout.addWidget(self.login_button)
 
-        # Add a "Create User" button for admins and branch managers
+        # Create user button
         self.create_user_button = QPushButton("إنشاء مستخدم جديد")
         self.create_user_button.clicked.connect(self.open_create_user_dialog)
-        self.create_user_button.setVisible(False)  # Hidden by default
-        self.layout.addWidget(self.create_user_button)
+        self.create_user_button.setVisible(False)
+        self.create_user_button.setStyleSheet("""
+            QPushButton {
+                background-color: #3498db;
+                color: white;
+                border-radius: 5px;
+                padding: 10px;
+                font-weight: bold;
+                font-size: 14px;
+                margin-top: 10px;
+            }
+            QPushButton:hover {
+                background-color: #2980b9;
+            }
+        """)
+        content_layout.addWidget(self.create_user_button)
 
+        # Add content frame to main layout
+        self.layout.addWidget(content_frame)
         self.setLayout(self.layout)
 
+        # Initialize other properties
         self.user_role = None
         self.branch_id = None
         self.user_id = None
@@ -240,6 +326,15 @@ class LoginWindow(QDialog):
         """Open a dialog to create a new user."""
         dialog = CreateUserDialog(self.user_role, self.branch_id, self.token, self)
         dialog.exec()
+
+    def toggle_password_visibility(self):
+        """Toggle password visibility between hidden and visible."""
+        if self.password_input.echoMode() == QLineEdit.EchoMode.Password:
+            self.password_input.setEchoMode(QLineEdit.EchoMode.Normal)
+            self.toggle_password_button.setText("👁️‍🗨️")
+        else:
+            self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
+            self.toggle_password_button.setText("👁️")
 
 class CreateUserDialog(QDialog):
     """Dialog to create a new user."""
