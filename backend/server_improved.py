@@ -1327,91 +1327,183 @@ def get_transactions(
 def get_transactions_report(
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
-    date_from: str = None,
-    date_to: str = None,
+    start_date: str = None,
+    end_date: str = None,
     branch_id: int = None,
+    destination_branch_id: int = None,
+    status: str = None,
     page: int = 1,
     per_page: int = 10
 ):
-    # Authorization check
-    if current_user["role"] not in ["director", "branch_manager"]:
-        raise HTTPException(status_code=403, detail="Not enough permissions")
-
-    # Branch managers can only access their branch's data
-    if current_user["role"] == "branch_manager":
-        branch_id = current_user["branch_id"]
-
-    offset = (page - 1) * per_page
-
-    # Build base query
-    query = db.query(Transaction)
-
-    # Add branch filter
-    if branch_id:
-        query = query.filter(Transaction.branch_id == branch_id)
-
-    # Add date filters
-    if date_from:
-        query = query.filter(Transaction.date >= date_from)
-    if date_to:
-        query = query.filter(Transaction.date <= date_to)
-
-    # Count total records
-    total = query.count()
-
-    # Add pagination
-    query = query.limit(per_page).offset(offset)
-
     try:
-        transactions = query.all()
+        # Authorization check
+        if current_user["role"] not in ["director", "branch_manager"]:
+            raise HTTPException(status_code=403, detail="Not enough permissions")
+
+        # Branch managers can only access their branch's data
+        if current_user["role"] == "branch_manager":
+            if branch_id and branch_id != current_user["branch_id"]:
+                raise HTTPException(status_code=403, detail="Can only access your branch's data")
+            branch_id = current_user["branch_id"]
+
+        # Calculate offset for pagination
+        offset = (page - 1) * per_page
+
+        # Build base query with joins for branch names
+        SendingBranch = aliased(Branch)
+        DestinationBranch = aliased(Branch)
         
-        # Convert transactions to list of dictionaries
-        transaction_list = []
-        for transaction in transactions:
+        query = db.query(
+            Transaction,
+            SendingBranch.name.label('sending_branch_name'),
+            DestinationBranch.name.label('destination_branch_name')
+        ).outerjoin(
+            SendingBranch, Transaction.branch_id == SendingBranch.id
+        ).outerjoin(
+            DestinationBranch, Transaction.destination_branch_id == DestinationBranch.id
+        )
+
+        # Add filters
+        if branch_id:
+            query = query.filter(Transaction.branch_id == branch_id)
+        if destination_branch_id:
+            query = query.filter(Transaction.destination_branch_id == destination_branch_id)
+        if status:
+            query = query.filter(Transaction.status == status)
+        if start_date:
+            try:
+                start = datetime.strptime(start_date, "%Y-%m-%d")
+                query = query.filter(Transaction.date >= start)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid start_date format. Use YYYY-MM-DD")
+        if end_date:
+            try:
+                end = datetime.strptime(end_date, "%Y-%m-%d")
+                end = end.replace(hour=23, minute=59, second=59)
+                query = query.filter(Transaction.date <= end)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid end_date format. Use YYYY-MM-DD")
+
+        # Get total count for pagination
+        total = query.count()
+
+        # Add sorting and pagination
+        query = query.order_by(Transaction.date.desc())
+        query = query.offset(offset).limit(per_page)
+
+        # Execute query
+        results = query.all()
+
+        # Format results
+        transactions = []
+        for transaction, sending_branch_name, destination_branch_name in results:
             transaction_dict = {
                 "id": transaction.id,
                 "sender": transaction.sender,
-                "sender_mobile": transaction.sender_mobile,
-                "sender_governorate": transaction.sender_governorate,
-                "sender_location": transaction.sender_location,
-                "sender_id": transaction.sender_id,
-                "sender_address": transaction.sender_address,
                 "receiver": transaction.receiver,
-                "receiver_mobile": transaction.receiver_mobile,
-                "receiver_governorate": transaction.receiver_governorate,
-                "receiver_location": transaction.receiver_location,
-                "receiver_id": transaction.receiver_id,
-                "receiver_address": transaction.receiver_address,
                 "amount": transaction.amount,
-                "base_amount": transaction.base_amount,
-                "benefited_amount": transaction.benefited_amount,
-                "tax_rate": transaction.tax_rate,
-                "tax_amount": transaction.tax_amount,
                 "currency": transaction.currency,
-                "message": transaction.message,
-                "employee_name": transaction.employee_name,
-                "branch_governorate": transaction.branch_governorate,
+                "date": transaction.date.isoformat(),
+                "status": transaction.status,
                 "branch_id": transaction.branch_id,
                 "destination_branch_id": transaction.destination_branch_id,
-                "employee_id": transaction.employee_id,
-                "status": transaction.status,
-                "date": transaction.date,
-                "is_received": transaction.is_received
+                "employee_name": transaction.employee_name,
+                "sending_branch_name": sending_branch_name or "غير معروف",
+                "destination_branch_name": destination_branch_name or "غير معروف",
+                "branch_governorate": transaction.branch_governorate,
+                "is_received": transaction.is_received,
+                "tax_amount": transaction.tax_amount,
+                "tax_rate": transaction.tax_rate,
+                "benefited_amount": transaction.benefited_amount
             }
-            transaction_list.append(transaction_dict)
+            transactions.append(transaction_dict)
 
         return {
-            "items": transaction_list,
+            "items": transactions,
             "total": total,
             "page": page,
             "per_page": per_page,
             "total_pages": (total + per_page - 1) // per_page
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
+        logger.error(f"Error in get_transactions_report: {str(e)}")
         raise HTTPException(
             status_code=500,
-            detail=f"Database error: {str(e)}"
+            detail=f"Internal server error: {str(e)}"
+        )
+
+@app.get("/reports/employees/")
+def get_employees_report(
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+    branch_id: int = None,
+    status: str = None,
+    role: str = None,
+    page: int = 1,
+    per_page: int = 10
+):
+    try:
+        if current_user["role"] not in ["director", "branch_manager"]:
+            raise HTTPException(status_code=403, detail="Not enough permissions")
+
+        if current_user["role"] == "branch_manager":
+            if branch_id and branch_id != current_user["branch_id"]:
+                raise HTTPException(status_code=403, detail="Can only access your branch's data")
+            branch_id = current_user["branch_id"]
+
+        offset = (page - 1) * per_page
+
+        query = db.query(User).join(Branch, User.branch_id == Branch.id)
+
+        if branch_id:
+            query = query.filter(User.branch_id == branch_id)
+        if role:
+            query = query.filter(User.role == role)
+        # Only filter by is_active if status is not None
+        if status is not None:
+            # Some databases may not have is_active, so use getattr with default True
+            if status == "active":
+                query = query.filter(getattr(User, 'is_active', True) == True)
+            elif status == "inactive":
+                query = query.filter(getattr(User, 'is_active', True) == False)
+
+        total = query.count()
+        query = query.order_by(User.created_at.desc())
+        query = query.offset(offset).limit(per_page)
+        employees = query.all()
+
+        employee_list = []
+        for employee in employees:
+            branch = db.query(Branch).filter(Branch.id == employee.branch_id).first()
+            employee_dict = {
+                "id": employee.id,
+                "username": employee.username,
+                "role": employee.role,
+                "branch_id": employee.branch_id,
+                "branch_name": branch.name if branch else "غير معروف",
+                "created_at": employee.created_at.isoformat() if employee.created_at else None,
+                "is_active": getattr(employee, 'is_active', True)
+            }
+            employee_list.append(employee_dict)
+
+        return {
+            "items": employee_list,
+            "total": total,
+            "page": page,
+            "per_page": per_page,
+            "total_pages": (total + per_page - 1) // per_page
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in get_employees_report: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error: {str(e)}"
         )
 
 @app.put("/users/{user_id}")

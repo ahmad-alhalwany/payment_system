@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
 from ui.change_password import ChangePasswordDialog
 from datetime import datetime
 from PyQt6.QtGui import QFont, QColor
-from PyQt6.QtCore import Qt, QTimer, QDate
+from PyQt6.QtCore import Qt, QTimer, QDate, QThread, pyqtSignal
 import os
 from ui.money_transfer_improved import MoneyTransferApp
 from ui.user_search import UserSearchDialog
@@ -20,6 +20,7 @@ from ui.menu_auth import MenuAuthMixin
 from branch_dashboard.employees_tab import EmployeesTabMixin
 from branch_dashboard.reports_tab import ReportsTabMixin
 import logging
+import time
 
 # Configure logging
 logging.basicConfig(
@@ -29,6 +30,21 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+class WorkerThread(QThread):
+    finished = pyqtSignal(object)
+    def __init__(self, func, *args, **kwargs):
+        super().__init__()
+        self.func = func
+        self.args = args
+        self.kwargs = kwargs
+        self.result = None
+    def run(self):
+        try:
+            self.result = self.func(*self.args, **self.kwargs)
+        except Exception as e:
+            self.result = e
+        self.finished.emit(self.result)
+
 class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, ReportsTabMixin):
     """Branch Manager Dashboard for the Internal Payment System."""
     
@@ -36,9 +52,9 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
         super().__init__()
         self.branch_id = branch_id
         self.token = token
-        self.user_id = user_id  # Add this
-        self.username = username  # Add this
-        self.full_name = full_name  # Add this
+        self.user_id = user_id
+        self.username = username
+        self.full_name = full_name
         self.api_url = os.environ["API_URL"]
         self.branch_id_to_name = {}
         self.current_page = 1
@@ -48,10 +64,20 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
         self.report_current_page = 1
         self.report_total_pages = 1
         
-        # Add timer for auto-refreshing transactions
+        # Cache tracking variables
+        self._last_financial_update = 0
+        self._last_employee_stats = 0
+        self._last_transactions = 0
+        self._last_branches_update = 0
+        self._branches_cache = None
+        self._financial_cache = None
+        self._employee_stats_cache = None
+        self._transactions_cache = None
+        
+        # Add timer for auto-refreshing transactions (5 minutes)
         self.transaction_timer = QTimer(self)
         self.transaction_timer.timeout.connect(self.load_recent_transactions)
-        self.transaction_timer.start(120000)  # 5000 ms = 5 seconds
+        self.transaction_timer.start(300000)  # 5 minutes
         
         self.setWindowTitle("لوحة تحكم مدير الفرع - نظام التحويلات المالية")
         self.setGeometry(100, 100, 1200, 800)
@@ -135,10 +161,10 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
         # Refresh data initially
         self.refresh_dashboard_data()
         
-        # Set up refresh timer (every 5 minutes)
+        # Set up refresh timer (every 10 minutes)
         self.refresh_timer = QTimer(self)
         self.refresh_timer.timeout.connect(self.refresh_dashboard_data)
-        self.refresh_timer.start(30000)  # 5 minutes in milliseconds
+        self.refresh_timer.start(600000)  # 10 minutes
         
         QTimer.singleShot(0, self.refresh_dashboard_data)
     
@@ -588,11 +614,9 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
             return False
             
     def generate_employee_report(self):
-        """Generate employee report based on filters."""
-        try:
+        """Generate employee report based on filters using a background thread."""
+        def fetch_employees():
             headers = {"Authorization": f"Bearer {self.token}"}
-            
-            # Map UI values to API parameters
             status_map = {
                 "نشط": "active",
                 "غير نشط": "inactive",
@@ -603,85 +627,71 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
                 "مدير فرع": "branch_manager",
                 "الكل": None
             }
-
             params = {
                 "status": status_map.get(self.employee_status_combo.currentText()),
                 "role": role_map.get(self.role_combo.currentText()),
                 "branch_id": self.branch_id
             }
-            
-            # Remove None values
             params = {k: v for k, v in params.items() if v is not None}
+            try:
+                response = requests.get(
+                    f"{self.api_url}/reports/employees/", 
+                    params=params, 
+                    headers=headers,
+                    timeout=10
+                )
+                return response
+            except Exception as e:
+                return e
 
-            response = requests.get(
-                f"{self.api_url}/reports/employees/", 
-                params=params, 
-                headers=headers,
-                timeout=10
-            )
-            
+        def handle_result(response):
+            if isinstance(response, Exception):
+                QMessageBox.critical(self, "خطأ", f"حدث خطأ غير متوقع:\n{str(response)}")
+                self.employee_report_table.setRowCount(0)
+                return
             if response.status_code == 200:
                 response_data = response.json()
-                
-                # Support multiple response formats
                 employees = response_data.get("employees", 
                     response_data.get("items", 
                     response_data.get("results", [])))
-                
                 if not isinstance(employees, list):
                     QMessageBox.warning(self, "خطأ", "تنسيق البيانات غير صحيح")
                     self.employee_report_table.setRowCount(0)
                     return
-                    
                 self.employee_report_table.setRowCount(len(employees))
-                
                 for row, employee in enumerate(employees):
-                    # Username
                     username_item = QTableWidgetItem(employee.get("username", "غير معروف"))
                     self.employee_report_table.setItem(row, 0, username_item)
-                    
-                    # Role
                     role = employee.get("role", "employee")
                     role_text = "مدير فرع" if role == "branch_manager" else "موظف"
                     role_item = QTableWidgetItem(role_text)
                     self.employee_report_table.setItem(row, 1, role_item)
-                    
-                    # Status with color
-                    is_active = employee.get("is_active", 
-                        employee.get("active", False))
+                    is_active = employee.get("is_active", employee.get("active", False))
                     status_text = "نشط" if is_active else "غير نشط"
                     status_item = QTableWidgetItem(status_text)
-                    
-                    # Set color correctly
                     color = QColor("#27ae60") if is_active else QColor("#e74c3c")
                     status_item.setForeground(color)
                     self.employee_report_table.setItem(row, 2, status_item)
-                    
-                    # Creation date
                     created_at = employee.get("created_at", "غير معروف")
                     created_item = QTableWidgetItem(created_at)
                     self.employee_report_table.setItem(row, 3, created_item)
-                    
-                    # Last activity
-                    last_active = employee.get("last_login", 
-                        employee.get("last_activity", "غير معروف"))
+                    last_active = employee.get("last_login", employee.get("last_activity", "غير معروف"))
                     last_active_item = QTableWidgetItem(last_active)
                     self.employee_report_table.setItem(row, 4, last_active_item)
-                    
                 self.statusBar().showMessage("تم تحميل التقرير بنجاح", 3000)
-                
             else:
-                error_detail = response.json().get("detail", "فشل في تحميل البيانات")
+                try:
+                    error_detail = response.json().get("detail", "فشل في تحميل البيانات")
+                except Exception:
+                    error_detail = "فشل في تحميل البيانات"
                 QMessageBox.warning(self, "خطأ", error_detail)
-                
-        except Exception as e:
-            QMessageBox.critical(
-                self, 
-                "خطأ", 
-                f"حدث خطأ غير متوقع:\n{str(e)}"
-            )
-            
-            
+
+        self.statusBar().showMessage("جاري تحميل تقرير الموظفين ...")
+        self.employee_report_table.setRowCount(0)
+        self._employee_report_thread = WorkerThread(fetch_employees)
+        self._employee_report_thread.finished.connect(handle_result)
+        self._employee_report_thread.start()
+    
     def prev_report_page(self):
         if self.report_current_page > 1:
             self.report_current_page -= 1
@@ -735,26 +745,36 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
         self.settings_tab.setLayout(layout)
     
     def refresh_dashboard_data(self):
-        """Refresh all dashboard data"""
+        """Refresh all dashboard data with caching"""
         try:
-            # Load branches first for ID-to-name mapping
-            self.load_branches()
+            current_time = time.time()
             
-            # Load financial status
-            self.load_financial_status()
+            # Load branches first for ID-to-name mapping (cache for 5 minutes)
+            if not self._branches_cache or current_time - self._last_branches_update > 300:
+                self.load_branches()
+                self._last_branches_update = current_time
+            
+            # Load financial status (cache for 5 minutes)
+            if not self._financial_cache or current_time - self._last_financial_update > 300:
+                self.load_financial_status()
+                self._last_financial_update = current_time
             
             # Update current date
             from datetime import datetime
             current_date = datetime.now().strftime("%Y-%m-%d")
             self.date_label.setText(f"تاريخ اليوم: {current_date}")
             
-            # Load employee statistics
-            self.load_employee_stats()
+            # Load employee statistics (cache for 10 minutes)
+            if not self._employee_stats_cache or current_time - self._last_employee_stats > 600:
+                self.load_employee_stats()
+                self._last_employee_stats = current_time
             
-            # Load transaction statistics
-            self.load_transaction_stats()
+            # Load transaction statistics (cache for 5 minutes)
+            if not self._transactions_cache or current_time - self._last_transactions > 300:
+                self.load_transaction_stats()
+                self._last_transactions = current_time
             
-            # Load recent transactions with pagination
+            # Load recent transactions with pagination (no caching as it's time-sensitive)
             self.load_recent_transactions()
             
             # Update status bar
@@ -842,51 +862,78 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
             self.transactions_amount.setText("إجمالي مبالغ التحويلات: 0 ليرة سورية")
     
     def load_recent_transactions(self):
-        """Load recent transactions with proper client-side pagination"""
+        """Load recent transactions with proper client-side pagination and performance optimizations"""
         try:
+            # Disable table updates while loading
+            self.recent_transactions_table.setUpdatesEnabled(False)
+            
             headers = {"Authorization": f"Bearer {self.token}"}
             all_transactions = []
 
-            # Fetch ALL outgoing transactions
+            # Fetch outgoing transactions with pagination
             outgoing_page = 1
             while True:
-                outgoing_response = requests.get(
-                    f"{self.api_url}/transactions/",
-                    headers=headers,
-                    params={
-                        "branch_id": self.branch_id,
-                        "page": outgoing_page,
-                        "per_page": 100  # Fetch large pages to reduce requests
-                    }
-                )
-                if outgoing_response.status_code == 200:
-                    outgoing_data = outgoing_response.json()
-                    all_transactions.extend(outgoing_data.get("transactions", []))
-                    if outgoing_page >= outgoing_data.get("total_pages", 1):
+                try:
+                    outgoing_response = requests.get(
+                        f"{self.api_url}/transactions/",
+                        headers=headers,
+                        params={
+                            "branch_id": self.branch_id,
+                            "page": outgoing_page,
+                            "per_page": 100  # Fetch large pages to reduce requests
+                        },
+                        timeout=10  # Add timeout
+                    )
+                    
+                    if outgoing_response.status_code == 200:
+                        outgoing_data = outgoing_response.json()
+                        transactions = outgoing_data.get("transactions", [])
+                        if not transactions:  # No more data
+                            break
+                        all_transactions.extend(transactions)
+                        if outgoing_page >= outgoing_data.get("total_pages", 1):
+                            break
+                        outgoing_page += 1
+                    else:
                         break
-                    outgoing_page += 1
-                else:
+                except requests.Timeout:
+                    logger.error("Timeout while fetching outgoing transactions")
+                    break
+                except Exception as e:
+                    logger.error(f"Error fetching outgoing transactions: {e}")
                     break
 
-            # Fetch ALL incoming transactions
+            # Fetch incoming transactions with pagination
             incoming_page = 1
             while True:
-                incoming_response = requests.get(
-                    f"{self.api_url}/transactions/",
-                    headers=headers,
-                    params={
-                        "destination_branch_id": self.branch_id,
-                        "page": incoming_page,
-                        "per_page": 100
-                    }
-                )
-                if incoming_response.status_code == 200:
-                    incoming_data = incoming_response.json()
-                    all_transactions.extend(incoming_data.get("transactions", []))
-                    if incoming_page >= incoming_data.get("total_pages", 1):
+                try:
+                    incoming_response = requests.get(
+                        f"{self.api_url}/transactions/",
+                        headers=headers,
+                        params={
+                            "destination_branch_id": self.branch_id,
+                            "page": incoming_page,
+                            "per_page": 100
+                        },
+                        timeout=10  # Add timeout
+                    )
+                    
+                    if incoming_response.status_code == 200:
+                        incoming_data = incoming_response.json()
+                        transactions = incoming_data.get("transactions", [])
+                        if not transactions:  # No more data
+                            break
+                        all_transactions.extend(transactions)
+                        if incoming_page >= incoming_data.get("total_pages", 1):
+                            break
+                        incoming_page += 1
+                    else:
                         break
-                    incoming_page += 1
-                else:
+                except requests.Timeout:
+                    logger.error("Timeout while fetching incoming transactions")
+                    break
+                except Exception as e:
+                    logger.error(f"Error fetching incoming transactions: {e}")
                     break
 
             # Sort all transactions by date descending
@@ -966,6 +1013,9 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
             self.page_label.setText("الصفحة: 1/1")
             self.prev_button.setEnabled(False)
             self.next_button.setEnabled(False)
+        finally:
+            # Re-enable table updates
+            self.recent_transactions_table.setUpdatesEnabled(True)
             
     def update_pagination_buttons(self):
         """Enable/disable pagination buttons based on current page"""
@@ -985,10 +1035,19 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
             self.load_recent_transactions()        
             
     def load_branches(self):
-        """Load all branches for ID-to-name mapping with transaction display fixes"""
+        """Load all branches for ID-to-name mapping with caching and performance optimizations"""
         try:
+            # Check cache first
+            current_time = time.time()
+            if self._branches_cache and current_time - self._last_branches_update < 300:
+                return self._branches_cache
+                
             headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
-            response = requests.get(f"{self.api_url}/branches/", headers=headers)
+            response = requests.get(
+                f"{self.api_url}/branches/", 
+                headers=headers,
+                timeout=10  # Add timeout
+            )
             
             if response.status_code == 200:
                 response_data = response.json()
@@ -1009,26 +1068,23 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
                             # Store only the branch name as string
                             self.branch_id_to_name[branch_id] = branch_name
                             
-                            # If you need financial data elsewhere, store it separately
-                            if hasattr(self, 'branch_financial_data'):
-                                self.branch_financial_data[branch_id] = {
-                                    'allocated': branch.get('allocated_amount', 0.0),
-                                    'stats': branch.get('financial_stats', {})
-                                }
-                                
                     except Exception as branch_error:
                         logger.error(f"Error processing branch: {branch_error}")
                         continue
-
+                
+                # Update cache
+                self._branches_cache = self.branch_id_to_name
+                self._last_branches_update = current_time
+                
+                # Force refresh of transactions after loading branches
+                self.load_recent_transactions()
+                
             else:
                 logger.error(f"Failed to load branches. Status: {response.status_code}")
                 self.branch_id_to_name = {}
                 
-            # Force refresh of transactions after loading branches
-            self.load_recent_transactions()
-            
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Network error loading branches: {str(e)}")
+        except requests.Timeout:
+            logger.error("Timeout while loading branches")
             self.branch_id_to_name = {}
         except ValueError as e:
             logger.error(f"JSON decode error: {str(e)}")

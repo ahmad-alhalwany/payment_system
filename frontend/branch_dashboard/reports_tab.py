@@ -62,10 +62,6 @@ class ReportsTabMixin:
                 QMessageBox.warning(self, "خطأ في التاريخ", "تاريخ البداية يجب أن يكون قبل تاريخ النهاية")
                 return
 
-            # Get date objects for filtering
-            selected_start_date = self.report_date_from.date().toPyDate()
-            selected_end_date = self.report_date_to.date().toPyDate()
-
             # Format dates for backend requests (without time)
             date_from = self.report_date_from.date().toString("yyyy-MM-dd")
             date_to = self.report_date_to.date().toString("yyyy-MM-dd")
@@ -88,101 +84,65 @@ class ReportsTabMixin:
                 "start_date": date_from,
                 "end_date": date_to,
                 "status": status_filter,
-                "page": 1,
-                "per_page": 100
+                "page": self.report_current_page,
+                "per_page": self.report_per_page
             }
 
-            # Fetch outgoing transactions (صادر)
-            if transfer_type in ["صادر", "الكل"]:
-                outgoing_params = base_params.copy()
-                outgoing_params["branch_id"] = self.branch_id
-                outgoing_page = 1
-                while True:
+            try:
+                # Fetch outgoing transactions (صادر)
+                if transfer_type in ["صادر", "الكل"]:
+                    outgoing_params = base_params.copy()
+                    outgoing_params["branch_id"] = self.branch_id
                     outgoing_response = requests.get(
-                        f"{self.api_url}/transactions/",
+                        f"{self.api_url}/reports/transactions/",
                         params={k: v for k, v in outgoing_params.items() if v is not None},
                         headers={"Authorization": f"Bearer {self.token}"},
                         timeout=15
                     )
                     if outgoing_response.status_code == 200:
                         outgoing_data = outgoing_response.json()
-                        for t in outgoing_data.get("transactions", []):
+                        for t in outgoing_data.get("items", []):
                             t["transaction_type"] = "outgoing"
-                        all_transactions.extend(outgoing_data.get("transactions", []))
-                        if outgoing_page >= outgoing_data.get("total_pages", 1):
-                            break
-                        outgoing_page += 1
-                        outgoing_params["page"] = outgoing_page
-                    else:
-                        break
+                        all_transactions.extend(outgoing_data.get("items", []))
+                        self.report_total_pages = outgoing_data.get("total_pages", 1)
 
-            # Fetch incoming transactions (وارد)
-            if transfer_type in ["وارد", "الكل"]:
-                incoming_params = base_params.copy()
-                incoming_params["destination_branch_id"] = self.branch_id
-                incoming_page = 1
-                while True:
+                # Fetch incoming transactions (وارد)
+                if transfer_type in ["وارد", "الكل"]:
+                    incoming_params = base_params.copy()
+                    incoming_params["destination_branch_id"] = self.branch_id
                     incoming_response = requests.get(
-                        f"{self.api_url}/transactions/",
+                        f"{self.api_url}/reports/transactions/",
                         params={k: v for k, v in incoming_params.items() if v is not None},
                         headers={"Authorization": f"Bearer {self.token}"},
                         timeout=15
                     )
                     if incoming_response.status_code == 200:
                         incoming_data = incoming_response.json()
-                        for t in incoming_data.get("transactions", []):
+                        for t in incoming_data.get("items", []):
                             t["transaction_type"] = "incoming"
-                        all_transactions.extend(incoming_data.get("transactions", []))
-                        if incoming_page >= incoming_data.get("total_pages", 1):
-                            break
-                        incoming_page += 1
-                        incoming_params["page"] = incoming_page
-                    else:
-                        break
+                        all_transactions.extend(incoming_data.get("items", []))
+                        if transfer_type == "الكل":
+                            self.report_total_pages = max(self.report_total_pages, incoming_data.get("total_pages", 1))
+                        else:
+                            self.report_total_pages = incoming_data.get("total_pages", 1)
 
-            # Client-side filtering with proper date parsing and status check
-            filtered_transactions = []
-            for t in all_transactions:
-                try:
-                    # Parse transaction date
-                    transaction_date = datetime.strptime(t.get("date", ""), "%Y-%m-%d %H:%M:%S").date()
-                    
-                    # Check date range
-                    date_valid = selected_start_date <= transaction_date <= selected_end_date
-                    
-                    # Check status
-                    status_valid = (status_filter is None) or (t.get("status", "").lower() == status_filter)
-                    
-                    if date_valid and status_valid:
-                        filtered_transactions.append(t)
-                except Exception as e:
-                    print(f"Error processing transaction {t.get('id')}: {str(e)}")
+            except requests.exceptions.RequestException as e:
+                QMessageBox.critical(self, "خطأ", f"فشل الاتصال بالخادم: {str(e)}")
+                return
 
-            # Sort by date descending
-            filtered_transactions.sort(
-                key=lambda x: datetime.strptime(x.get("date", ""), "%Y-%m-%d %H:%M:%S"),
+            # Sort transactions by date descending
+            all_transactions.sort(
+                key=lambda x: datetime.strptime(x.get("date", "1900-01-01"), "%Y-%m-%dT%H:%M:%S.%f"),
                 reverse=True
             )
 
-            # Apply pagination
-            total_items = len(filtered_transactions)
-            self.report_total_pages = max(1, (total_items + self.report_per_page - 1) // self.report_per_page)
-            start_idx = (self.report_current_page - 1) * self.report_per_page
-            end_idx = start_idx + self.report_per_page
-            transactions = filtered_transactions[start_idx:end_idx]
-
             # Populate table
-            self.transfer_report_table.setRowCount(len(transactions))
+            self.transfer_report_table.setRowCount(len(all_transactions))
             valid_count = 0
 
-            for row, transaction in enumerate(transactions):
+            for row, transaction in enumerate(all_transactions):
                 try:
-                    # Validate mandatory fields
-                    required_fields = ['id', 'sender', 'receiver', 'amount', 'date', 'status']
-                    if not all(field in transaction for field in required_fields):
-                        continue
-
-                    # Transaction Type
+                    # Type indicator
                     type_item = self.create_transaction_type_item(transaction)
                     self.transfer_report_table.setItem(row, 0, type_item)
 
@@ -207,14 +167,18 @@ class ReportsTabMixin:
                     amount_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                     self.transfer_report_table.setItem(row, 4, amount_item)
 
-                    # Date parsing
-                    raw_date = transaction.get("date", "")
+                    # Date parsing and formatting
+                    date_str = transaction.get("date", "")
                     try:
-                        date_obj = datetime.strptime(raw_date, "%Y-%m-%d %H:%M:%S")
-                        date_str = date_obj.strftime("%Y-%m-%d %H:%M")
-                    except (ValueError, TypeError):
-                        date_str = raw_date if raw_date else "غير معروف"
-                    self.transfer_report_table.setItem(row, 5, QTableWidgetItem(date_str))
+                        date_obj = datetime.strptime(date_str, "%Y-%m-%dT%H:%M:%S.%f")
+                        formatted_date = date_obj.strftime("%Y-%m-%d %H:%M")
+                    except ValueError:
+                        try:
+                            date_obj = datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S")
+                            formatted_date = date_obj.strftime("%Y-%m-%d %H:%M")
+                        except ValueError:
+                            formatted_date = date_str
+                    self.transfer_report_table.setItem(row, 5, QTableWidgetItem(formatted_date))
 
                     # Status display
                     status = transaction.get("status", "").lower()
@@ -225,33 +189,28 @@ class ReportsTabMixin:
                     self.transfer_report_table.setItem(row, 6, status_item)
 
                     # Branch information
-                    branch_id = transaction.get("branch_id")
-                    dest_branch_id = transaction.get("destination_branch_id")
-                    sending_branch = self.branch_id_to_name.get(branch_id, f"الفرع {branch_id}" if branch_id else "غير معروف")
-                    receiving_branch = self.branch_id_to_name.get(dest_branch_id, f"الفرع {dest_branch_id}" if dest_branch_id else "غير معروف")
+                    sending_branch = transaction.get("sending_branch_name", "غير معروف")
+                    receiving_branch = transaction.get("destination_branch_name", "غير معروف")
                     self.transfer_report_table.setItem(row, 7, QTableWidgetItem(sending_branch))
                     self.transfer_report_table.setItem(row, 8, QTableWidgetItem(receiving_branch))
 
                     # Employee information
-                    employee_name = transaction.get("employee_name") or f"الموظف {transaction.get('employee_id', '')}"
+                    employee_name = transaction.get("employee_name", "غير معروف")
                     self.transfer_report_table.setItem(row, 9, QTableWidgetItem(employee_name))
 
                     valid_count += 1
 
                 except Exception as field_error:
-                    print(f"Error processing row {row}: {str(field_error)}")
+                    logger.error(f"Error processing row {row}: {str(field_error)}")
                     continue
 
             # Update UI
             self.update_pagination_controls()
             self.statusBar().showMessage(f"تم تحميل {valid_count} معاملة صالحة", 5000)
 
-        except requests.exceptions.RequestException as e:
-            self.handle_connection_error(e)
-        except ValueError as e:
-            self.handle_data_error(e)
         except Exception as e:
-            self.handle_unexpected_error(e)
+            logger.error(f"Error generating report: {str(e)}")
+            QMessageBox.critical(self, "خطأ", f"حدث خطأ أثناء إنشاء التقرير: {str(e)}")
             
     def export_transfer_report(self):
         """Export transfer report to CSV and PDF"""
