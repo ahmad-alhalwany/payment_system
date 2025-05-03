@@ -1,14 +1,63 @@
-from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox, QComboBox
-from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox, QComboBox, QProgressBar
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QFont
 import requests
 import jwt
 import datetime
 import os
+import time
 
 # Secret key for generating local tokens - should match the one in backend/security.py
 SECRET_KEY = "929b15e43fd8f1cf4df79d86eb93ca426ab58ae53386c7a91ac4adb45832773b"
 ALGORITHM = "HS256"
+
+class LoginWorker(QThread):
+    """Worker thread for handling login operations"""
+    finished = pyqtSignal(dict)
+    error = pyqtSignal(str)
+    progress = pyqtSignal(int)
+
+    def __init__(self, username, password):
+        super().__init__()
+        self.username = username
+        self.password = password
+
+    def run(self):
+        try:
+            self.progress.emit(10)
+            api_url = os.environ["API_URL"]
+            self.progress.emit(30)
+            
+            # Add retry mechanism
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    response = requests.post(
+                        f"{api_url}/login/",
+                        json={"username": self.username, "password": self.password},
+                        timeout=5  # Add timeout
+                    )
+                    self.progress.emit(70)
+                    
+                    if response.status_code == 200:
+                        self.progress.emit(100)
+                        self.finished.emit(response.json())
+                        return
+                    elif response.status_code == 401:
+                        self.error.emit("اسم المستخدم أو كلمة المرور غير صحيحة!")
+                        return
+                    else:
+                        if attempt == max_retries - 1:
+                            self.error.emit(f"خطأ في تسجيل الدخول: {response.status_code}")
+                            return
+                        time.sleep(1)  # Wait before retry
+                except requests.exceptions.RequestException as e:
+                    if attempt == max_retries - 1:
+                        self.error.emit(f"تعذر الاتصال بالخادم: {str(e)}")
+                        return
+                    time.sleep(1)  # Wait before retry
+        except Exception as e:
+            self.error.emit(f"حدث خطأ غير متوقع: {str(e)}")
 
 class LoginWindow(QDialog):
     def __init__(self):
@@ -42,6 +91,16 @@ class LoginWindow(QDialog):
                 background-color: white;
                 font-size: 14px;
             }
+            QProgressBar {
+                border: 1px solid #ccc;
+                border-radius: 5px;
+                text-align: center;
+                background-color: white;
+            }
+            QProgressBar::chunk {
+                background-color: #27ae60;
+                border-radius: 5px;
+            }
         """)
 
         self.layout = QVBoxLayout()
@@ -63,6 +122,11 @@ class LoginWindow(QDialog):
         self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
         self.layout.addWidget(self.password_label)
         self.layout.addWidget(self.password_input)
+
+        # Add progress bar
+        self.progress_bar = QProgressBar(self)
+        self.progress_bar.setVisible(False)
+        self.layout.addWidget(self.progress_bar)
 
         self.login_button = QPushButton("تسجيل الدخول")
         self.login_button.clicked.connect(self.check_login)
@@ -91,21 +155,22 @@ class LoginWindow(QDialog):
         self.setLayout(self.layout)
 
         self.user_role = None
-        self.branch_id = None  # Store branch_id for branch managers
-        self.user_id = None    # Store user_id
-        self.token = None      # Store authentication token
+        self.branch_id = None
+        self.user_id = None
+        self.token = None
+        self.username = None
         
         self.check_initialization()
 
     def check_initialization(self):
         try:
             api_url = os.environ["API_URL"]
-            response = requests.get(f"{api_url}/check-initialization/")
+            response = requests.get(f"{api_url}/check-initialization/", timeout=5)
             if response.status_code == 200 and not response.json().get("is_initialized"):
                 dialog = SetupDialog(self)
                 dialog.exec()
         except Exception as e:
-            QMessageBox.warning(self, "خطأ", f"تعذر التحقق من تهيئة النظام: {str(e)}")        
+            QMessageBox.warning(self, "خطأ", f"تعذر التحقق من تهيئة النظام: {str(e)}")
 
     def check_login(self):
         """Check login credentials via the backend."""
@@ -116,15 +181,52 @@ class LoginWindow(QDialog):
             QMessageBox.warning(self, "خطأ", "يرجى إدخال اسم المستخدم وكلمة المرور!")
             return
 
-        # Attempt backend login
-        self.backend_login(username, password)
+        # Disable inputs during login
+        self.set_inputs_enabled(False)
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+
+        # Start login worker
+        self.worker = LoginWorker(username, password)
+        self.worker.finished.connect(self.handle_login_success)
+        self.worker.error.connect(self.handle_login_error)
+        self.worker.progress.connect(self.update_progress)
+        self.worker.start()
+
+    def set_inputs_enabled(self, enabled):
+        """Enable or disable all input widgets"""
+        self.username_input.setEnabled(enabled)
+        self.password_input.setEnabled(enabled)
+        self.login_button.setEnabled(enabled)
+
+    def update_progress(self, value):
+        """Update progress bar value"""
+        self.progress_bar.setValue(value)
+
+    def handle_login_success(self, data):
+        """Handle successful login"""
+        self.user_role = data.get("role")
+        self.branch_id = data.get("branch_id")
+        self.user_id = data.get("user_id")
+        self.token = data.get("token")
+        self.username = data.get("username")
+
+        # Show "Create User" button for admin and branch manager
+        if self.user_role in ["director", "branch_manager"]:
+            self.create_user_button.setVisible(True)
+
+        QMessageBox.information(self, "نجاح", f"تم تسجيل الدخول بنجاح كـ {self.user_role}!")
+        self.accept()
+
+    def handle_login_error(self, error_message):
+        """Handle login error"""
+        self.set_inputs_enabled(True)
+        self.progress_bar.setVisible(False)
+        QMessageBox.warning(self, "خطأ في تسجيل الدخول", error_message)
 
     def create_local_token(self, username, role, branch_id, user_id=1):
         """Create a JWT token for local testing that matches the backend token format."""
-        # Set expiration time to 24 hours from now
         expiration = datetime.datetime.utcnow() + datetime.timedelta(hours=24)
-        
-        # Create token payload
         payload = {
             "username": username,
             "role": role,
@@ -132,39 +234,7 @@ class LoginWindow(QDialog):
             "user_id": user_id,
             "exp": expiration
         }
-        
-        # Generate token
-        token = jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
-        return token
-
-    def backend_login(self, username, password):
-        """Authenticate user using the backend API."""
-        try:
-            api_url = os.environ["API_URL"]
-            response = requests.post(
-                f"{api_url}/login/",
-                json={"username": username, "password": password}
-            )
-            
-            if response.status_code == 200:
-                data = response.json()
-                self.user_role = data.get("role")
-                self.branch_id = data.get("branch_id")
-                self.user_id = data.get("user_id")
-                self.token = data.get("token")
-                self.username = data.get("username")
-                
-
-                # Show "Create User" button for admin and branch manager
-                if self.user_role in ["director", "branch_manager"]:
-                    self.create_user_button.setVisible(True)
-
-                QMessageBox.information(self, "نجاح", f"تم تسجيل الدخول بنجاح كـ {self.user_role}!")
-                self.accept()
-            else:
-                QMessageBox.warning(self, "خطأ في تسجيل الدخول", "اسم المستخدم أو كلمة المرور غير صحيحة!")
-        except Exception as e:
-            QMessageBox.warning(self, "خطأ في الاتصال", f"تعذر الاتصال بالخادم: {str(e)}")
+        return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 
     def open_create_user_dialog(self):
         """Open a dialog to create a new user."""

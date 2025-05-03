@@ -10,18 +10,9 @@ from login_fixed import LoginWindow
 from dotenv import load_dotenv
 from config import setup_environment
 
-def main():
-    # Set up environment variables
-    setup_environment()
-
-    app = QApplication(sys.argv)
-    load_dotenv()
-    # Set application-wide font for Arabic support
-    font = QFont("Arial", 10)
-    app.setFont(font)
-    
-    # Apply stylesheet for modern look
-    app.setStyleSheet("""
+def load_stylesheet():
+    """Load and return the application stylesheet"""
+    return """
         QWidget {
             font-family: Arial;
         }
@@ -89,44 +80,63 @@ def main():
             background-color: #3498db;
             color: white;
         }
-    """)
+    """
 
+def load_appropriate_window(login_window):
+    """Load the appropriate window based on user role"""
+    user_role = login_window.user_role
+    branch_id = login_window.branch_id
+    user_id = login_window.user_id
+    token = login_window.token
+    username = login_window.username if hasattr(login_window, 'username') else "User"
+
+    if user_role == "director":
+        window = DirectorDashboard(token=token)
+        window.setWindowTitle("لوحة تحكم المدير - نظام التحويلات المالية")
+    elif user_role == "branch_manager":
+        window = BranchManagerDashboard(
+            branch_id=branch_id,
+            token=token,
+            user_id=user_id,
+            username=username,
+            full_name=username,
+        )
+        window.setWindowTitle(f"لوحة تحكم مدير الفرع - نظام التحويلات المالية")
+    elif user_role == "employee":
+        window = MoneyTransferApp(
+            user_token=token,
+            branch_id=branch_id,
+            user_id=user_id,
+            user_role=user_role,
+            username=username
+        )
+        window.setWindowTitle(f"واجهة موظف التحويلات - نظام التحويلات المالية")
+    else:
+        QMessageBox.warning(None, "خطأ", "دور المستخدم غير معروف!")
+        sys.exit()
+
+    return window
+
+def main():
+    # Set up environment variables
+    setup_environment()
+
+    app = QApplication(sys.argv)
+    load_dotenv()
+    
+    # Set application-wide font for Arabic support
+    font = QFont("Arial", 10)
+    app.setFont(font)
+    
+    # Apply optimized stylesheet
+    app.setStyleSheet(load_stylesheet())
+
+    # Initialize login window
     login_window = LoginWindow()
     
     if login_window.exec() == 1:  # Check if login was successful
-        user_role = login_window.user_role 
-        branch_id = login_window.branch_id
-        user_id = login_window.user_id
-        token = login_window.token
-        username = login_window.username if hasattr(login_window, 'username') else "User"
-
-        if user_role == "director":
-            # Pass the updated parameters to DirectorDashboard
-            window = DirectorDashboard(token=token)
-            window.setWindowTitle("لوحة تحكم المدير - نظام التحويلات المالية")
-        elif user_role == "branch_manager":
-            window = BranchManagerDashboard(
-                branch_id=branch_id,
-                token=token,
-                user_id=user_id,  # Use the extracted user_id
-                username=username,
-                full_name=username,  # Or actual name if available
-            )
-            window.setWindowTitle(f"لوحة تحكم مدير الفرع - نظام التحويلات المالية")
-        elif user_role == "employee":
-            # Use our updated MoneyTransferApp with all the new features
-            window = MoneyTransferApp(
-                user_token=token,
-                branch_id=branch_id,
-                user_id=user_id,
-                user_role=user_role,
-                username=username
-            )
-            window.setWindowTitle(f"واجهة موظف التحويلات - نظام التحويلات المالية")
-        else:
-            QMessageBox.warning(None, "خطأ", "دور المستخدم غير معروف!")
-            sys.exit()
-
+        # Load appropriate window
+        window = load_appropriate_window(login_window)
         window.show()
         sys.exit(app.exec())
     else:
