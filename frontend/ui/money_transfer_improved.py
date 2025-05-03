@@ -1475,13 +1475,12 @@ class MoneyTransferApp(QWidget, ReceiptPrinter, TransferCore):
             return
         
         # Otherwise, show dialog to select transaction and status
-        selected_items = self.transactions_table.selectedItems()
-        if not selected_items:
+        selected_indexes = self.transactions_table.selectedIndexes()
+        if not selected_indexes:
             QMessageBox.warning(self, "تحذير", "الرجاء تحديد تحويل لتحديث حالته")
             return
-        
-        row = selected_items[0].row()
-        transaction_id = self.transactions_table.item(row, 0).text()
+        row = selected_indexes[0].row()
+        transaction_id = self.transactions_table.model().index(row, 0).data()
         
         # Create a dialog to select new status
         status_dialog = QDialog(self)

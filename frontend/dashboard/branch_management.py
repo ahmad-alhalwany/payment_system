@@ -6,18 +6,111 @@ from PyQt6.QtWidgets import (
 )
 
 from PyQt6.QtGui import QFont
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from ui.branch_management_improved import AddBranchDialog, EditBranchDialog
 from ui.custom_widgets import ModernGroupBox, ModernButton
 from ui.theme import Theme
 import requests
 from ui.tax_management import TaxManagementDialog
 from config import get_api_url
+import time
 
 API_BASE_URL = get_api_url()
 
+class BranchDataCache:
+    """Cache for branch data to reduce API calls and improve performance"""
+    
+    def __init__(self, cache_duration=300):  # 5 minutes default cache duration
+        self._cache = {}
+        self._cache_timestamps = {}
+        self._cache_duration = cache_duration
+        self._update_timer = QTimer()
+        self._update_timer.timeout.connect(self._cleanup_expired_cache)
+        self._update_timer.start(60000)  # Cleanup every minute
+        
+    def get(self, key):
+        """Get cached data if it exists and is not expired"""
+        if key in self._cache:
+            if time.time() - self._cache_timestamps[key] < self._cache_duration:
+                return self._cache[key]
+            else:
+                del self._cache[key]
+                del self._cache_timestamps[key]
+        return None
+        
+    def set(self, key, value):
+        """Cache data with current timestamp"""
+        self._cache[key] = value
+        self._cache_timestamps[key] = time.time()
+        
+    def invalidate(self, key=None):
+        """Invalidate specific cache entry or all cache if no key provided"""
+        if key:
+            if key in self._cache:
+                del self._cache[key]
+                del self._cache_timestamps[key]
+        else:
+            self._cache.clear()
+            self._cache_timestamps.clear()
+            
+    def _cleanup_expired_cache(self):
+        """Remove expired cache entries"""
+        current_time = time.time()
+        expired_keys = [
+            key for key, timestamp in self._cache_timestamps.items()
+            if current_time - timestamp >= self._cache_duration
+        ]
+        for key in expired_keys:
+            del self._cache[key]
+            del self._cache_timestamps[key]
+
 class BranchManagementMixin:
     """Mixin handling all branch-related operations"""
+    
+    def __init__(self):
+        """Initialize the mixin with cache, batch processing, and auto-refresh timer"""
+        self.branch_cache = BranchDataCache()
+        self._batch_size = 50  # Number of rows to process at once
+        self._update_timer = QTimer()
+        self._update_timer.timeout.connect(self._process_batch)
+        self._pending_updates = []
+        # Auto-refresh timer for branches table (every 90 seconds)
+        self._branches_auto_refresh_timer = QTimer()
+        self._branches_auto_refresh_timer.setInterval(90000)  # 90,000 ms = 90 seconds
+        self._branches_auto_refresh_timer.timeout.connect(self._auto_refresh_branches)
+        self._branches_auto_refresh_timer.start()
+        # Temporary local cache for updated tax rates
+        self._local_tax_cache = {}
+        
+    def _process_batch(self):
+        """Process a batch of pending updates"""
+        if not self._pending_updates:
+            self._update_timer.stop()
+            return
+            
+        batch = self._pending_updates[:self._batch_size]
+        self._pending_updates = self._pending_updates[self._batch_size:]
+        
+        for update_func in batch:
+            update_func()
+            
+        if self._pending_updates:
+            self._update_timer.start(50)  # Process next batch after 50ms
+            
+    def _queue_update(self, update_func):
+        """Queue an update function for batch processing"""
+        self._pending_updates.append(update_func)
+        if not self._update_timer.isActive():
+            self._update_timer.start(50)
+
+    def _auto_refresh_branches(self):
+        """Auto-refresh the branches table and show a message."""
+        self.branch_cache.invalidate('branches')
+        self.load_branches()
+        if hasattr(self, 'status_bar'):
+            self.status_bar.showMessage("تم تحديث بيانات الفروع تلقائيًا.", 3000)
+        elif hasattr(self, 'statusBar') and callable(self.statusBar):
+            self.statusBar().showMessage("تم تحديث بيانات الفروع تلقائيًا.", 3000)
 
     def setup_branches_tab(self):
         """Set up the branches tab."""
@@ -134,9 +227,16 @@ class BranchManagementMixin:
         
         self.branches_tab.setLayout(layout)
         
-    def load_branches(self):
+    def load_branches(self, force_refresh=False):
         """Load branches from the API with optimized performance."""
         try:
+            # Check cache first, unless force_refresh is True
+            if not force_refresh:
+                cached_data = self.branch_cache.get('branches')
+                if cached_data:
+                    self._update_branches_table(cached_data)
+                    return
+            
             headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
             
             # Get all branches in a single request with employee counts and tax rates
@@ -154,67 +254,11 @@ class BranchManagementMixin:
                 response_data = response.json()
                 branches = response_data.get('branches', []) if isinstance(response_data, dict) else response_data
                 
-                # Clear existing rows while preserving column widths
-                self.branches_table.setRowCount(0)
+                # Cache the data
+                self.branch_cache.set('branches', branches)
                 
-                # Pre-allocate rows for better performance
-                self.branches_table.setRowCount(len(branches))
-                
-                for row_position, branch in enumerate(branches):
-                    if not isinstance(branch, dict):
-                        continue
-                    
-                    # Get branch data with proper error handling
-                    branch_id = branch.get('id')
-                    
-                    # Fetch tax rate from dedicated endpoint
-                    tax_rate = 0.0
-                    try:
-                        tax_response = requests.get(
-                            f"{API_BASE_URL}/api/branches/{branch_id}/tax_rate/",
-                            headers=headers
-                        )
-                        if tax_response.status_code == 200:
-                            tax_data = tax_response.json()
-                            tax_rate = tax_data.get('tax_rate', 0.0)
-                    except Exception as e:
-                        print(f"Error fetching tax rate for branch {branch_id}: {e}")
-                    
-                    # Get employee count from branch data or fetch it separately
-                    employee_count = 0
-                    try:
-                        emp_response = requests.get(
-                            f"{API_BASE_URL}/branches/{branch_id}/employees/stats/",
-                            headers=headers
-                        )
-                        if emp_response.status_code == 200:
-                            emp_data = emp_response.json()
-                            employee_count = emp_data.get('total', 0)
-                    except Exception as e:
-                        print(f"Error fetching employee count for branch {branch_id}: {e}")
-                    
-                    # Create items list for better performance
-                    items = [
-                        (str(branch.get('branch_id', '')), branch_id),
-                        (branch.get('name', ''), None),
-                        (branch.get('location', ''), None),
-                        (branch.get('governorate', ''), None),
-                        (str(employee_count), None),
-                        (f"{branch.get('allocated_amount_syp', 0):,.2f}", None),
-                        (f"{branch.get('allocated_amount_usd', 0):,.2f}", None),
-                        (f"{float(tax_rate):.2f}%", None)
-                    ]
-                    
-                    # Batch set items for better performance
-                    for col, (display_value, user_role_data) in enumerate(items):
-                        item = QTableWidgetItem(display_value)
-                        if user_role_data is not None:
-                            item.setData(Qt.ItemDataRole.UserRole, user_role_data)
-                        item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                        self.branches_table.setItem(row_position, col, item)
-                
-                # Update table after all items are set
-                self.branches_table.viewport().update()
+                # Update table with batched processing
+                self._update_branches_table(branches)
             else:
                 error_msg = f"فشل في تحميل الفروع: رمز الحالة {response.status_code}"
                 try:
@@ -229,11 +273,66 @@ class BranchManagementMixin:
             QMessageBox.critical(self, "خطأ في الاتصال", f"خطأ في الاتصال بالخادم: {str(e)}")
         except Exception as e:
             QMessageBox.critical(self, "خطأ", f"حدث خطأ: {str(e)}")
+            
+    def _update_branches_table(self, branches):
+        """Update branches table with batched processing"""
+        # Clear existing rows while preserving column widths
+        self.branches_table.setRowCount(0)
         
+        # Pre-allocate rows for better performance
+        self.branches_table.setRowCount(len(branches))
+        
+        # Process branches in batches
+        for i in range(0, len(branches), self._batch_size):
+            batch = branches[i:i + self._batch_size]
+            self._queue_update(lambda b=batch, start=i: self._process_branch_batch(b, start))
+            
+    def _process_branch_batch(self, batch, start_row):
+        """Process a batch of branches"""
+        for idx, branch in enumerate(batch):
+            if not isinstance(branch, dict):
+                continue
+                
+            row_position = start_row + idx
+            
+            # Get branch data with proper error handling
+            branch_id = branch.get('id')
+            
+            # Use local tax cache if available
+            if branch_id in self._local_tax_cache:
+                tax_rate = self._local_tax_cache[branch_id]
+            else:
+                tax_rate = branch.get('tax_rate', 0)
+                if tax_rate < 1 and tax_rate != 0:
+                    tax_rate = tax_rate * 100
+            
+            items = [
+                (str(branch.get('branch_id', '')), branch_id),
+                (branch.get('name', ''), None),
+                (branch.get('location', ''), None),
+                (branch.get('governorate', ''), None),
+                (str(branch.get('employee_count', 0)), None),
+                (f"{branch.get('allocated_amount_syp', 0):,.2f}", None),
+                (f"{branch.get('allocated_amount_usd', 0):,.2f}", None),
+                (f"{float(tax_rate):.2f}%", None)
+            ]
+            
+            # Batch set items for better performance
+            for col, (display_value, user_role_data) in enumerate(items):
+                item = QTableWidgetItem(display_value)
+                if user_role_data is not None:
+                    item.setData(Qt.ItemDataRole.UserRole, user_role_data)
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.branches_table.setItem(row_position, col, item)
+                
+        # Update viewport after batch
+        self.branches_table.viewport().update()
+
     def add_branch(self):
         """Open dialog to add a new branch."""
         dialog = AddBranchDialog(self.token, self)
         if dialog.exec() == 1:  # If dialog was accepted
+            self.branch_cache.invalidate('branches')
             self.load_branches()  # Refresh the branches list
             self.load_branches_for_filter()  # Refresh branch filters
             self.load_dashboard_data()  # Refresh dashboard data
@@ -259,6 +358,7 @@ class BranchManagementMixin:
                 branch_data = response.json()
                 dialog = EditBranchDialog(branch_data, self.token, self)
                 if dialog.exec() == 1:  # If dialog was accepted
+                    self.branch_cache.invalidate('branches')
                     self.load_branches()  # Refresh the branches list
                     self.load_branches_for_filter()  # Refresh branch filters
             else:
@@ -299,6 +399,7 @@ class BranchManagementMixin:
                 
                 if response.status_code == 204:
                     QMessageBox.information(self, "نجاح", "تم حذف الفرع بنجاح")
+                    self.branch_cache.invalidate('branches')
                     self.load_branches()  # Refresh the branches list
                     self.load_branches_for_filter()  # Refresh branch filters
                     self.load_dashboard_data()  # Refresh dashboard data
@@ -758,14 +859,18 @@ class BranchManagementMixin:
                     )
                     
                     if response.status_code == 200:
+                        # Store the new tax rate in the local cache (temporary workaround)
+                        self._local_tax_cache[branch_id] = new_tax_rate
                         # Update the tax rate in the branches table
                         tax_item = QTableWidgetItem(f"{new_tax_rate:.2f}%")
                         tax_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                         self.branches_table.setItem(selected_row, 7, tax_item)
                         
                         QMessageBox.information(self, "نجاح", "تم تحديث نسبة الضريبة بنجاح")
-                        # Refresh the branches table to ensure all data is up to date
-                        self.load_branches()
+                        # Invalidate cache before refreshing
+                        self.branch_cache.invalidate('branches')
+                        # Force refresh the branches table to ensure all data is up to date
+                        self.load_branches(force_refresh=True)
                     else:
                         error_msg = "فشل في تحديث نسبة الضريبة"
                         try:

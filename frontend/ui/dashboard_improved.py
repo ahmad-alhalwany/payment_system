@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (
     QStatusBar
 )
 from PyQt6.QtGui import QFont, QColor
-from PyQt6.QtCore import Qt, QTimer, QDate
+from PyQt6.QtCore import Qt, QTimer, QDate, QThread, pyqtSignal
 from ui.money_transfer_improved import MoneyTransferApp
 from dashboard.branch_management import BranchManagementMixin
 from ui.user_search import UserSearchDialog
@@ -21,12 +21,229 @@ from dashboard.settings_handler import SettingsHandlerMixin
 from dashboard.employee_management import EmployeeManagementMixin
 
 import os
+import time
+from datetime import datetime
+
+class TableUpdateManager:
+    """Manages efficient table updates to prevent UI freezing"""
+    
+    def __init__(self, table_widget):
+        self.table = table_widget
+        self.batch_size = 50  # Number of rows to update at once
+        self.update_delay = 10  # Milliseconds between batch updates
+        
+    def begin_update(self):
+        """Prepare table for batch updates"""
+        self.table.setUpdatesEnabled(False)
+        self.table.setSortingEnabled(False)
+        
+    def end_update(self):
+        """Re-enable table updates and sorting"""
+        self.table.setUpdatesEnabled(True)
+        self.table.setSortingEnabled(True)
+        
+    def update_table_data(self, data, column_mapping):
+        """Update table data in batches to prevent UI freezing
+        
+        Args:
+            data: List of dictionaries containing row data
+            column_mapping: Dictionary mapping column indices to data keys
+        """
+        total_rows = len(data)
+        self.table.setRowCount(total_rows)
+        
+        def update_batch(start_idx):
+            end_idx = min(start_idx + self.batch_size, total_rows)
+            
+            for row in range(start_idx, end_idx):
+                row_data = data[row]
+                for col, key in column_mapping.items():
+                    if isinstance(key, tuple):  # Custom formatting function
+                        key, formatter = key
+                        value = formatter(row_data.get(key, ""))
+                    else:
+                        value = str(row_data.get(key, ""))
+                    
+                    item = QTableWidgetItem(value)
+                    
+                    # Store original data for sorting
+                    if key in ['amount', 'date']:
+                        try:
+                            if key == 'amount':
+                                item.setData(Qt.ItemDataRole.UserRole, float(value.replace(',', '')))
+                            elif key == 'date':
+                                item.setData(Qt.ItemDataRole.UserRole, datetime.strptime(value, "%Y-%m-%d"))
+                        except (ValueError, TypeError):
+                            pass
+                    
+                    self.table.setItem(row, col, item)
+            
+            if end_idx < total_rows:
+                QTimer.singleShot(self.update_delay, lambda: update_batch(end_idx))
+            else:
+                self.end_update()
+        
+        self.begin_update()
+        update_batch(0)
+
+class DataLoadThread(QThread):
+    """Thread for loading dashboard data asynchronously"""
+    data_loaded = pyqtSignal(dict)
+    error_occurred = pyqtSignal(str)
+    progress_updated = pyqtSignal(str)
+    
+    def __init__(self, api_url, token):
+        super().__init__()
+        self.api_url = api_url
+        self.token = token
+        
+    def run(self):
+        try:
+            self.progress_updated.emit("جاري تحميل البيانات...")
+            headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
+            
+            # Load transactions
+            response = requests.get(f"{self.api_url}/transactions/", headers=headers)
+            if response.status_code == 200:
+                transactions = response.json().get("transactions", [])
+                self.data_loaded.emit({"transactions": transactions})
+            else:
+                self.error_occurred.emit(f"فشل تحميل البيانات: {response.status_code}")
+        except Exception as e:
+            self.error_occurred.emit(f"خطأ في تحميل البيانات: {str(e)}")
+
+class ChartManager:
+    """Manages efficient chart updates and statistics visualization"""
+    
+    def __init__(self, dashboard):
+        self.dashboard = dashboard
+        self._data_cache = {}
+        self._update_queue = []
+        self._is_updating = False
+        
+    def queue_update(self, chart_type, data):
+        """Queue a chart update to be processed efficiently"""
+        self._update_queue.append((chart_type, data))
+        if not self._is_updating:
+            self._process_next_update()
+    
+    def _process_next_update(self):
+        """Process the next chart update in the queue"""
+        if not self._update_queue:
+            self._is_updating = False
+            return
+            
+        self._is_updating = True
+        chart_type, data = self._update_queue.pop(0)
+        
+        try:
+            if chart_type == "transfers":
+                self._update_transfers_chart(data)
+            elif chart_type == "amounts":
+                self._update_amounts_chart(data)
+        finally:
+            # Schedule next update
+            QTimer.singleShot(50, self._process_next_update)
+    
+    def _update_transfers_chart(self, data):
+        """Update transfers chart efficiently"""
+        try:
+            if not data:
+                self.dashboard.transfers_bars.setText("لا توجد بيانات متاحة")
+                return
+            # Create HTML-based bar chart
+            html = ['<div style="font-family: Arial; padding: 10px;">']
+            max_value = max(count for _, count in data)
+            
+            for branch, count in data:
+                percentage = (count / max_value) * 100 if max_value > 0 else 0
+                html.append(f'''
+                    <div style="margin: 5px 0;">
+                        <div style="display: flex; align-items: center;">
+                            <div style="width: 150px; text-align: left;">{branch}</div>
+                            <div style="flex-grow: 1;">
+                                <div style="background: #3498db; width: {percentage}%; height: 20px; 
+                                          border-radius: 3px; position: relative;">
+                                    <span style="position: absolute; right: 5px; color: white; 
+                                               line-height: 20px;">{count}</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                ''')
+            
+            html.append('</div>')
+            self.dashboard.transfers_bars.setText(''.join(html))
+            
+        except Exception as e:
+            print(f"Error updating transfers chart: {e}")
+    
+    def _update_amounts_chart(self, data):
+        """Update amounts chart efficiently"""
+        try:
+            if not data:
+                self.dashboard.amounts_bars.setText("لا توجد بيانات متاحة")
+                return
+            # Create HTML-based bar chart for amounts
+            html = ['<div style="font-family: Arial; padding: 10px;">']
+            max_value = max(amount for _, amount in data)
+            
+            for branch, amount in data:
+                percentage = (amount / max_value) * 100 if max_value > 0 else 0
+                formatted_amount = f"{amount:,.2f}"
+                html.append(f'''
+                    <div style="margin: 5px 0;">
+                        <div style="display: flex; align-items: center;">
+                            <div style="width: 150px; text-align: left;">{branch}</div>
+                            <div style="flex-grow: 1;">
+                                <div style="background: #2ecc71; width: {percentage}%; height: 20px; 
+                                          border-radius: 3px; position: relative;">
+                                    <span style="position: absolute; right: 5px; color: white; 
+                                               line-height: 20px;">{formatted_amount}</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                ''')
+            
+            html.append('</div>')
+            self.dashboard.amounts_bars.setText(''.join(html))
+            
+        except Exception as e:
+            print(f"Error updating amounts chart: {e}")
+
+class BranchStatsLoader(QThread):
+    """Asynchronous loader for branch statistics"""
+    stats_loaded = pyqtSignal(dict)
+    error_occurred = pyqtSignal(str)
+    progress_updated = pyqtSignal(str)
+    
+    def __init__(self, api_url, token):
+        super().__init__()
+        self.api_url = api_url
+        self.token = token
+        
+    def run(self):
+        try:
+            self.progress_updated.emit("جاري تحميل إحصائيات الفروع...")
+            headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
+            
+            # Load branch statistics
+            response = requests.get(f"{self.api_url}/branches/stats/", headers=headers)
+            if response.status_code == 200:
+                stats = response.json()
+                self.stats_loaded.emit(stats)
+            else:
+                self.error_occurred.emit(f"فشل تحميل إحصائيات الفروع: {response.status_code}")
+        except Exception as e:
+            self.error_occurred.emit(f"خطأ في تحميل إحصائيات الفروع: {str(e)}")
 
 class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, ReceiptPrinterMixin, ReportHandlerMixin, SettingsHandlerMixin, EmployeeManagementMixin, BranchManagementMixin):
     """Dashboard for the director role."""
     
     def __init__(self, token=None):
         super().__init__()
+        BranchManagementMixin.__init__(self)
         self.token = token
         self.api_url = os.environ["API_URL"]
         self.current_page = 1
@@ -169,6 +386,9 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
         self.branch_timer = QTimer()
         self.branch_timer.timeout.connect(self.refresh_branches)
         self.branch_timer.start(30000)  # Refresh every 5 seconds
+        
+        # Initialize chart manager
+        self.chart_manager = ChartManager(self)
         
     def setup_admin_transfer_tab(self):
         """Set up the admin money transfer tab with unrestricted capabilities."""
@@ -548,7 +768,8 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
         self.transactions_table.setColumnCount(11)
         self.transactions_table.setHorizontalHeaderLabels([
             "النوع", "رقم التحويل", "المرسل", "المستلم", "المبلغ", "التاريخ", "الحالة", 
-            "الفرع المرسل", "اتجاه الصادر", "الفرع المستلم", "اتجاه الوارد", "اسم الموظف"
+            "الفرع المرسل", "اتجاه الصادر",
+            "الفرع المستلم", "اتجاه الوارد", "اسم الموظف"
         ])
         self.transactions_table.horizontalHeader().setStretchLastSection(True)
         self.transactions_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
@@ -646,107 +867,61 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
             QMessageBox.warning(self, "خطأ", f"تعذر تحميل بيانات لوحة المعلومات: {str(e)}")
     
     def load_recent_transactions(self):
-        """Load recent transactions with directional branch information"""
+        """Load recent transactions with optimized table updates"""
         try:
-            headers = {"Authorization": f"Bearer {self.token}"}
-            response = requests.get(f"{self.api_url}/transactions/", headers=headers)
+            self.statusBar().showMessage("جاري تحميل التحويلات...")
             
-            if response.status_code == 200:
-                data = response.json()
-                all_transactions = data.get("transactions", [])
-                
-                # Client-side pagination
-                self.total_pages = (len(all_transactions) + self.per_page - 1) // self.per_page
-                start_index = (self.current_page - 1) * self.per_page
-                end_index = start_index + self.per_page
-                transactions = all_transactions[start_index:end_index]
-                
-                # Create branch name mapping
-                if not hasattr(self, 'branch_id_to_name'):
-                    self.branch_id_to_name = {}
-                    branches_response = self.api_client.get_branches()
-                    if branches_response.status_code == 200:
-                        branches = branches_response.json().get("branches", [])
-                        self.branch_id_to_name = {b["id"]: b["name"] for b in branches}
-                
-                # Set column count and headers (if not already done)
-                self.recent_transactions_table.setColumnCount(12)
-                self.recent_transactions_table.setHorizontalHeaderLabels([
-                    "النوع", "رقم التحويل", "المرسل", "المستلم", "المبلغ", 
-                    "التاريخ", "الحالة", "الفرع المرسل", "اتجاه الصادر",
-                    "الفرع المستلم", "اتجاه الوارد", "اسم الموظف"
-                ])
-                
-                # Clear the table first
-                self.recent_transactions_table.setRowCount(0)
-                
-                self.recent_transactions_table.setRowCount(len(transactions))
-                
-                for row, transaction in enumerate(transactions):
-                    # Transaction Type
-                    type_item = self.create_transaction_type_item(transaction)
-                    self.recent_transactions_table.setItem(row, 0, type_item)
-                    
-                    # Transaction ID
-                    trans_id = str(transaction.get("id", ""))
-                    id_item = QTableWidgetItem(trans_id[:8] + "..." if len(trans_id) > 8 else trans_id)
-                    id_item.setToolTip(trans_id)
-                    self.recent_transactions_table.setItem(row, 1, id_item)
-                    
-                    # Sender/Receiver
-                    self.recent_transactions_table.setItem(row, 2, QTableWidgetItem(transaction.get("sender", "")))
-                    self.recent_transactions_table.setItem(row, 3, QTableWidgetItem(transaction.get("receiver", "")))
-                    
-                    # Amount with proper currency formatting
-                    amount = transaction.get("amount", 0)
-                    currency = transaction.get("currency", "ليرة سورية")
-                    formatted_amount = format_currency(amount, currency)
-                    amount_item = QTableWidgetItem(formatted_amount)
-                    amount_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-                    self.recent_transactions_table.setItem(row, 4, amount_item)
-                    
-                    # Date
-                    date_str = transaction.get("date", "")
-                    self.recent_transactions_table.setItem(row, 5, QTableWidgetItem(date_str))
-                    
-                    # Status
-                    status = transaction.get("status", "").lower()
-                    status_ar = get_status_arabic(status)
-                    status_item = QTableWidgetItem(status_ar)
-                    status_item.setBackground(get_status_color(status))
-                    status_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                    self.recent_transactions_table.setItem(row, 6, status_item)
-                    
-                    # Sending Branch and Direction
-                    branch_id = transaction.get("branch_id")
-                    sending_branch = self.branch_id_to_name.get(branch_id, f"الفرع {branch_id}" if branch_id else "غير معروف")
-                    self.recent_transactions_table.setItem(row, 7, QTableWidgetItem(sending_branch))
-                    
-                    # Outgoing Direction Indicator
-                    outgoing_direction = QTableWidgetItem("↑" if branch_id else "")
-                    outgoing_direction.setForeground(QColor(0, 150, 0))  # Green color
-                    outgoing_direction.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                    self.recent_transactions_table.setItem(row, 8, outgoing_direction)
-                    
-                    # Receiving Branch and Direction
-                    dest_branch_id = transaction.get("destination_branch_id")
-                    receiving_branch = self.branch_id_to_name.get(dest_branch_id, f"الفرع {dest_branch_id}" if dest_branch_id else "غير معروف")
-                    self.recent_transactions_table.setItem(row, 9, QTableWidgetItem(receiving_branch))
-                    
-                    # Incoming Direction Indicator
-                    incoming_direction = QTableWidgetItem("↓" if dest_branch_id else "")
-                    incoming_direction.setForeground(QColor(150, 0, 0))  # Red color
-                    incoming_direction.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                    self.recent_transactions_table.setItem(row, 10, incoming_direction)
-                    
-                    # Employee
-                    self.recent_transactions_table.setItem(row, 11, QTableWidgetItem(transaction.get("employee_name", "")))
-
-                self.update_pagination_controls()
-                
+            # Initialize table update manager if not exists
+            if not hasattr(self, 'table_manager'):
+                self.table_manager = TableUpdateManager(self.recent_transactions_table)
+            
+            # Create and start data loading thread
+            self.load_thread = DataLoadThread(self.api_url, self.token)
+            self.load_thread.data_loaded.connect(self.update_transactions_table)
+            self.load_thread.error_occurred.connect(lambda msg: self.statusBar().showMessage(msg, 5000))
+            self.load_thread.progress_updated.connect(lambda msg: self.statusBar().showMessage(msg))
+            self.load_thread.start()
+            
         except Exception as e:
-            print(f"Error loading recent transactions: {e}")
-            self.statusBar().showMessage(f"خطأ في تحميل التحويلات: {str(e)}", 5000)
+            self.statusBar().showMessage(f"خطأ في تحميل البيانات: {str(e)}", 5000)
+
+    def update_transactions_table(self, data):
+        """Update transactions table with the loaded data"""
+        try:
+            transactions = data.get("transactions", [])
+            
+            # Client-side pagination
+            start_index = (self.current_page - 1) * self.per_page
+            end_index = start_index + self.per_page
+            page_transactions = transactions[start_index:end_index]
+            
+            # Define column mapping
+            column_mapping = {
+                0: ("type", lambda x: self.create_transaction_type_item(x).text()),
+                1: "id",
+                2: "sender",
+                3: "receiver",
+                4: ("amount", lambda x: f"{float(x):,.2f}" if x else "0.00"),
+                5: "date",
+                6: ("status", lambda x: self._get_status_arabic(x)),
+                7: "sending_branch_name",
+                8: ("outgoing_direction", lambda x: "↑" if x.get("branch_id") else ""),
+                9: "destination_branch_name",
+                10: ("incoming_direction", lambda x: "↓" if x.get("destination_branch_id") else ""),
+                11: "employee_name"
+            }
+            
+            # Update table using the manager
+            self.table_manager.update_table_data(page_transactions, column_mapping)
+            
+            # Update pagination info
+            self.total_pages = (len(transactions) + self.per_page - 1) // self.per_page
+            self.update_pagination_controls()
+            
+            self.statusBar().showMessage("تم تحميل التحويلات بنجاح", 3000)
+            
+        except Exception as e:
+            self.statusBar().showMessage(f"خطأ في تحديث الجدول: {str(e)}", 5000)
 
     def update_pagination_controls(self):
         """Update pagination controls."""
@@ -1291,3 +1466,37 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
                 
         except Exception as e:
             print(f"Error refreshing branches: {str(e)}")
+
+    def load_branch_stats(self):
+        """Load branch statistics with optimized chart updates"""
+        try:
+            # Create and start stats loader thread
+            self.stats_loader = BranchStatsLoader(self.api_url, self.token)
+            self.stats_loader.stats_loaded.connect(self.update_branch_stats)
+            self.stats_loader.error_occurred.connect(lambda msg: self.statusBar().showMessage(msg, 5000))
+            self.stats_loader.progress_updated.connect(lambda msg: self.statusBar().showMessage(msg))
+            self.stats_loader.start()
+            
+        except Exception as e:
+            self.statusBar().showMessage(f"خطأ في تحميل إحصائيات الفروع: {str(e)}", 5000)
+
+    def update_branch_stats(self, stats):
+        """Update branch statistics displays efficiently"""
+        try:
+            # Update basic statistics
+            self.branches_count.setText(str(stats.get("total_branches", 0)))
+            self.employees_count.setText(str(stats.get("total_employees", 0)))
+            self.transactions_count.setText(str(stats.get("total_transactions", 0)))
+            self.amount_total.setText(f"{stats.get('total_amount', 0):,.2f}")
+            
+            # Queue chart updates
+            branch_transfers = stats.get("transfers_by_branch", [])
+            self.chart_manager.queue_update("transfers", branch_transfers)
+            
+            branch_amounts = stats.get("amounts_by_branch", [])
+            self.chart_manager.queue_update("amounts", branch_amounts)
+            
+            self.statusBar().showMessage("تم تحديث إحصائيات الفروع بنجاح", 3000)
+            
+        except Exception as e:
+            self.statusBar().showMessage(f"خطأ في تحديث إحصائيات الفروع: {str(e)}", 5000)

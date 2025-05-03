@@ -7,60 +7,50 @@ import requests
 class EmployeeManagementMixin:
     """Mixin handling all employee-related operations"""
 
+    def _fetch_and_cache_branches(self):
+        """Fetch all branches once and cache their names for fast lookup."""
+        if hasattr(self, 'branch_id_to_name') and self.branch_id_to_name:
+            return  # Already cached
+        try:
+            headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
+            response = requests.get(f"{self.api_url}/branches/", headers=headers)
+            if response.status_code == 200:
+                branches = response.json().get("branches", [])
+                self.branch_id_to_name = {b.get("id"): b.get("name", "غير محدد") for b in branches}
+            else:
+                self.branch_id_to_name = {}
+        except Exception as e:
+            print(f"Error fetching branches: {e}")
+            self.branch_id_to_name = {}
+
     def load_employees(self, branch_id=None):
         """Load employees data."""
         try:
+            self._fetch_and_cache_branches()
             headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
-            
-            # Use /users/ endpoint instead of /employees/ to include branch managers
             url = f"{self.api_url}/users/"
             if branch_id:
                 url += f"?branch_id={branch_id}"
-            
             response = requests.get(url, headers=headers)
-            
             if response.status_code == 200:
-                # For /users/ endpoint, the response is wrapped in a "users" key
                 employees = response.json().get("users", [])
                 self.employees_table.setRowCount(len(employees))
-                
                 for i, employee in enumerate(employees):
                     self.employees_table.setItem(i, 0, QTableWidgetItem(employee.get("username", "")))
-                    
-                    # Map role to Arabic
                     role = employee.get("role", "")
                     role_arabic = "موظف"
                     if role == "director":
                         role_arabic = "مدير"
                     elif role == "branch_manager":
                         role_arabic = "مدير فرع"
-                    
                     self.employees_table.setItem(i, 1, QTableWidgetItem(role_arabic))
-                    
-                    # Get branch name
                     branch_id = employee.get("branch_id")
-                    branch_name = "غير محدد"
-                    if branch_id:
-                        try:
-                            branch_response = requests.get(
-                                f"{self.api_url}/branches/{branch_id}", 
-                                headers=headers
-                            )
-                            if branch_response.status_code == 200:
-                                branch_data = branch_response.json()
-                                branch_name = branch_data.get("name", "غير محدد")
-                        except:
-                            pass
-                    
+                    branch_name = self.branch_id_to_name.get(branch_id, "غير محدد")
                     self.employees_table.setItem(i, 2, QTableWidgetItem(branch_name))
                     self.employees_table.setItem(i, 3, QTableWidgetItem(employee.get("created_at", "")))
-                    
-                    # Status (always active for now)
                     status_item = QTableWidgetItem("نشط")
                     status_item.setForeground(QColor("#27ae60"))
                     self.employees_table.setItem(i, 4, status_item)
-                    
-                    # Store the employee data in the first cell for later use
                     self.employees_table.item(i, 0).setData(Qt.ItemDataRole.UserRole, employee)
             else:
                 QMessageBox.warning(self, "خطأ", f"فشل تحميل الموظفين: رمز الحالة {response.status_code}")
@@ -90,86 +80,55 @@ class EmployeeManagementMixin:
         
     def filter_employees(self):
         try:
-            # مسح الجدول قبل التحميل
+            self._fetch_and_cache_branches()
             self.employees_table.setRowCount(0)
-            
-            # استخراج معايير التصفية
             branch_id = self.branch_filter.currentData()
             search_text = self.employee_search.text().strip().lower()
-
-            # إعداد بارامترات الطلب
             params = {}
-            if branch_id and branch_id != self.api_url and branch_id != "":  # تجنب إرسال branch_id إذا كان None (جميع الفروع)
+            if branch_id and branch_id != self.api_url and branch_id != "":
                 params["branch_id"] = branch_id
-
-            # إرسال الطلب مع البارامترات
             headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
             response = requests.get(f"{self.api_url}/users/", headers=headers, params=params)
-            
             if response.status_code == 200:
                 employees = response.json().get("users", [])
-                
-                # تطبيق البحث المحلي إذا كان هناك نص بحث
                 if search_text:
                     filtered_employees = []
                     for emp in employees:
-                        # Check username
                         if search_text in emp.get("username", "").lower():
                             filtered_employees.append(emp)
                             continue
-                            
-                        # Check ID
                         if search_text in str(emp.get("id", "")).lower():
                             filtered_employees.append(emp)
                             continue
-                            
-                        # Check role
                         if search_text in emp.get("role", "").lower():
                             filtered_employees.append(emp)
                             continue
-                            
-                        # Check branch name if available
-                        branch_name = self.get_branch_name(emp.get("branch_id"))
+                        branch_name = self.branch_id_to_name.get(emp.get("branch_id"), "غير محدد")
                         if search_text in branch_name.lower():
                             filtered_employees.append(emp)
                             continue
-                    
                     employees = filtered_employees
-
-                # تعبئة الجدول بالبيانات المصفاة
                 self.employees_table.setRowCount(len(employees))
                 for i, emp in enumerate(employees):
                     username_item = QTableWidgetItem(emp.get("username", ""))
-                    username_item.setData(Qt.ItemDataRole.UserRole, emp)  # Store employee data
+                    username_item.setData(Qt.ItemDataRole.UserRole, emp)
                     self.employees_table.setItem(i, 0, username_item)
-                    
-                    # تحويل الدور إلى عربي
                     role_arabic = {
                         "employee": "موظف",
                         "branch_manager": "مدير فرع",
                         "director": "مدير النظام"
                     }.get(emp.get("role", ""), emp.get("role", ""))
                     self.employees_table.setItem(i, 1, QTableWidgetItem(role_arabic))
-                    
-                    # الحصول على اسم الفرع من الـ branch_id
-                    branch_name = self.get_branch_name(emp.get("branch_id"))
+                    branch_name = self.branch_id_to_name.get(emp.get("branch_id"), "غير محدد")
                     self.employees_table.setItem(i, 2, QTableWidgetItem(branch_name))
-                    
-                    # تاريخ الإنشاء
                     self.employees_table.setItem(i, 3, QTableWidgetItem(emp.get("created_at", "")))
-                    
-                    # الحالة
                     status_item = QTableWidgetItem("نشط")
                     status_item.setForeground(QColor("#27ae60"))
                     self.employees_table.setItem(i, 4, status_item)
-
-                # عرض رسالة إذا لم توجد نتائج
                 if not employees:
                     self.show_no_results_message()
-                    
             else:
                 QMessageBox.warning(self, "خطأ", f"فشل تحميل البيانات: {response.status_code}")
-
         except Exception as e:
             print(f"Error in filter_employees: {e}")
             QMessageBox.warning(self, "خطأ", f"خطأ في التصفية: {str(e)}")

@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import (
     QMessageBox, QComboBox, QDateEdit, QDialog, QGroupBox, QFormLayout, QLineEdit, QSpinBox, QDoubleSpinBox, QPushButton
 )
 from PyQt6.QtGui import QFont, QColor
-from PyQt6.QtCore import Qt, QDate, QTimer
+from PyQt6.QtCore import Qt, QDate, QTimer, QThread, pyqtSignal
 from ui.custom_widgets import ModernGroupBox, ModernButton
 from ui.theme import Theme
 import os
@@ -17,6 +17,24 @@ from config import get_api_url
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+class ApiWorker(QThread):
+    result_ready = pyqtSignal(object)
+    error_occurred = pyqtSignal(Exception)
+    def __init__(self, func, *args, **kwargs):
+        super().__init__()
+        self.func = func
+        self.args = args
+        self.kwargs = kwargs
+        self._result = None
+        self._error = None
+    def run(self):
+        try:
+            self._result = self.func(*self.args, **self.kwargs)
+            self.result_ready.emit(self._result)
+        except Exception as e:
+            self._error = e
+            self.error_occurred.emit(e)
 
 class InventoryTab(QWidget):
     """Inventory tab for tracking receivables and profits from branches."""
@@ -299,58 +317,53 @@ class InventoryTab(QWidget):
         table.setUpdatesEnabled(True)
 
     def load_data(self):
-        """Load data with optimized performance."""
+        """Load data with optimized performance using QThread."""
         if self.is_updating:
             self.update_pending = True
             return
-            
         self.is_updating = True
         try:
-            # Get date range
-            start_date = self.date_from.date().toString("yyyy-MM-dd")  # Fixed date format
-            end_date = self.date_to.date().toString("yyyy-MM-dd")  # Fixed date format
-            
-            # Get selected branch
+            # Prepare parameters as before
+            start_date = self.date_from.date().toString("yyyy-MM-dd")
+            end_date = self.date_to.date().toString("yyyy-MM-dd")
             selected_branch_id = self.branch_filter.currentData()
-            
-            # Get selected currency
             currency_text = self.currency_filter.currentText()
             currency = None
             if currency_text == "ليرة سورية (SYP)":
                 currency = "SYP"
             elif currency_text == "دولار أمريكي (USD)":
                 currency = "USD"
-            
-            # Get selected status
             status = self.status_filter.currentData()
             if status == "all":
                 status = None
-            
-            # Prepare request
-            params = {
-                "start_date": start_date,
-                "end_date": end_date
-            }
-            
+            params = {"start_date": start_date, "end_date": end_date}
             if selected_branch_id and selected_branch_id != "all":
                 params["branch_id"] = selected_branch_id
             if currency:
                 params["currency"] = currency
             if status:
                 params["status"] = status
-                
             headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
-            
-            
-            # Make API request for transactions with tax info
-            response = requests.get(
-                f"{self.api_url}/api/transactions/tax_summary/",
-                params=params,
-                headers=headers,
-                timeout=30  # Added timeout
-            )
-            
-            
+            def api_call():
+                return requests.get(
+                    f"{self.api_url}/api/transactions/tax_summary/",
+                    params=params,
+                    headers=headers,
+                    timeout=30
+                )
+            self.data_worker = ApiWorker(api_call)
+            self.data_worker.result_ready.connect(self._on_data_loaded)
+            self.data_worker.error_occurred.connect(self._handle_unexpected_error)
+            self.data_worker.start()
+        except Exception as e:
+            self._handle_unexpected_error(e)
+            self.is_updating = False
+            if self.update_pending:
+                self.update_pending = False
+                QTimer.singleShot(1000, self.load_data)
+
+    def _on_data_loaded(self, response):
+        try:
             if response.status_code == 200:
                 data = response.json()
                 self._process_tax_data(data)
@@ -359,20 +372,13 @@ class InventoryTab(QWidget):
                 logger.error(f"Error Response: {response.text}")
                 print(f"Error Response Text: {response.text}")
                 self._handle_api_error(response)
-                
-        except requests.exceptions.ConnectionError as e:
-            logger.error(f"Connection Error: {str(e)}")
-            print(f"Connection Error: {str(e)}")
-            self._handle_connection_error(e)
         except Exception as e:
-            logger.error(f"Unexpected Error: {str(e)}")
-            print(f"Unexpected Error: {str(e)}")
             self._handle_unexpected_error(e)
         finally:
             self.is_updating = False
             if self.update_pending:
                 self.update_pending = False
-                QTimer.singleShot(1000, self.load_data)  # Retry after 1 second
+                QTimer.singleShot(1000, self.load_data)
 
     def _process_tax_data(self, data):
         """Process tax data with optimized performance."""
@@ -592,30 +598,31 @@ class InventoryTab(QWidget):
         return True
     
     def load_branches(self):
-        """Load branches for the branch filter dropdown."""
+        """Load branches for the branch filter dropdown using QThread."""
         try:
             if hasattr(self, 'status_label'):
                 self.status_label.setText("جاري تحميل الفروع...")
-            
             headers = self._get_auth_headers()
-            
-            response = requests.get(
-                f"{self.api_url}/branches/",
-                headers=headers,
-                timeout=10
-            )
-            
-            
+            def api_call():
+                return requests.get(
+                    f"{self.api_url}/branches/",
+                    headers=headers,
+                    timeout=10
+                )
+            self.branches_worker = ApiWorker(api_call)
+            self.branches_worker.result_ready.connect(self._on_branches_loaded)
+            self.branches_worker.error_occurred.connect(self._handle_connection_error)
+            self.branches_worker.start()
+        except Exception as e:
+            self._handle_connection_error(e)
+
+    def _on_branches_loaded(self, response):
+        try:
             if response.status_code == 200:
                 data = response.json()
                 branches = data.get("branches", [])
-                
-                
-                # Clear existing items except "All Branches"
                 self.branch_filter.clear()
                 self.branch_filter.addItem("جميع الفروع", "all")
-                
-                # Add branches to dropdown
                 for branch in branches:
                     if isinstance(branch, dict):
                         branch_name = branch.get('name', '')
@@ -624,7 +631,6 @@ class InventoryTab(QWidget):
                         if branch_name and branch_id:
                             display_text = f"{branch_name} - {branch_gov}" if branch_gov else branch_name
                             self.branch_filter.addItem(display_text, branch_id)
-                
                 if hasattr(self, 'status_label'):
                     self.status_label.setText("تم تحميل الفروع بنجاح")
             else:
@@ -633,12 +639,7 @@ class InventoryTab(QWidget):
                 if hasattr(self, 'status_label'):
                     self.status_label.setText(f"خطأ في تحميل الفروع: {response.status_code}")
                     QMessageBox.warning(self, "خطأ", f"فشل تحميل الفروع: {error_msg}")
-                
-        except requests.exceptions.RequestException as e:
-            print(f"Connection Error: {str(e)}")
-            self._handle_connection_error(e)
         except Exception as e:
-            print(f"Unexpected Error: {str(e)}")
             self._handle_unexpected_error(e)
 
     def _refresh_data(self):

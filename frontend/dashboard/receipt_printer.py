@@ -350,4 +350,3 @@ class ReceiptPrinterMixin:
             """
             combined_doc.setHtml(combined_html)
             combined_doc.print(printer)
-            combined_doc.print(printer)
