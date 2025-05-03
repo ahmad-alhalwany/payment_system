@@ -4,10 +4,58 @@ from PyQt6.QtWidgets import (
     QMessageBox, QDialog, QTableWidget, QTableWidgetItem,
     QLineEdit, QFormLayout, QComboBox, QGroupBox, QHeaderView
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
 import os
 from ui.custom_widgets import ModernGroupBox, ModernButton
 from config import get_api_url
+
+# --- QThread Workers ---
+class LoadBranchesWorker(QThread):
+    finished = pyqtSignal(list)
+    error = pyqtSignal(str)
+    def __init__(self, api_url, token):
+        super().__init__()
+        self.api_url = api_url
+        self.token = token
+    def run(self):
+        try:
+            headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
+            response = requests.get(f"{self.api_url}/branches/", headers=headers)
+            if response.status_code == 200:
+                self.finished.emit(response.json())
+            else:
+                self.error.emit(f"فشل تحميل الفروع: رمز الحالة {response.status_code}")
+        except Exception as e:
+            self.error.emit(f"تعذر الاتصال بالخادم: {str(e)}")
+
+class SaveTaxRateWorker(QThread):
+    finished = pyqtSignal(bool, str)
+    def __init__(self, api_url, branch_id, tax_rate, token):
+        super().__init__()
+        self.api_url = api_url
+        self.branch_id = branch_id
+        self.tax_rate = tax_rate
+        self.token = token
+    def run(self):
+        try:
+            headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
+            api_url = f"{self.api_url}/api/branches/{self.branch_id}/tax_rate/"
+            response = requests.put(
+                api_url,
+                json={"tax_rate": self.tax_rate},
+                headers=headers
+            )
+            if response.status_code == 200:
+                self.finished.emit(True, "تم تحديث نسبة الضريبة بنجاح")
+            else:
+                try:
+                    error_data = response.json()
+                    error_msg = error_data.get("detail", f"فشل تحديث نسبة الضريبة: رمز الحالة {response.status_code}")
+                except:
+                    error_msg = f"فشل تحديث نسبة الضريبة: رمز الحالة {response.status_code}"
+                self.finished.emit(False, error_msg)
+        except Exception as e:
+            self.finished.emit(False, f"تعذر الاتصال بالخادم: {str(e)}")
 
 class TaxManagementDialog(QDialog):
     """Dialog for managing tax rates."""
@@ -92,74 +140,54 @@ class TaxManagementDialog(QDialog):
         cancel_button.clicked.connect(self.reject)
         buttons_layout.addWidget(cancel_button)
         
-        save_button = ModernButton("حفظ", color="#2ecc71")
-        save_button.clicked.connect(self.save_tax_rate)
-        buttons_layout.addWidget(save_button)
+        self.save_button = ModernButton("حفظ", color="#2ecc71")
+        self.save_button.clicked.connect(self.save_tax_rate)
+        buttons_layout.addWidget(self.save_button)
         
         layout.addLayout(buttons_layout)
         
+        # Loading indicator
+        self.loading_label = QLabel("جاري الحفظ...")
+        self.loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.loading_label.setStyleSheet("color: #3498db; font-weight: bold;")
+        self.loading_label.hide()
+        layout.addWidget(self.loading_label)
+
         self.setLayout(layout)
     
     def save_tax_rate(self):
         """Save the tax rate changes."""
+        # Validate inputs
+        if not self.branch_id_input.text().strip():
+            QMessageBox.warning(self, "تنبيه", "الرجاء إدخال رمز الفرع")
+            return
+        
         try:
-            # Validate inputs
-            if not self.branch_id_input.text().strip():
-                QMessageBox.warning(self, "تنبيه", "الرجاء إدخال رمز الفرع")
+            tax_rate = float(self.tax_rate_input.text())
+            if tax_rate < 0:
+                QMessageBox.warning(self, "تنبيه", "نسبة الضريبة يجب أن تكون قيمة موجبة")
                 return
-            
-            # Validate tax rate
-            try:
-                tax_rate = float(self.tax_rate_input.text())
-                if tax_rate < 0:
-                    QMessageBox.warning(self, "تنبيه", "نسبة الضريبة يجب أن تكون قيمة موجبة")
-                    return
-            except ValueError:
-                QMessageBox.warning(self, "تنبيه", "الرجاء إدخال قيمة رقمية صحيحة لنسبة الضريبة")
-                return
-            
-            # Get branch ID and ensure it's properly formatted
-            branch_id = self.branch_id_input.text().strip()
-            
-            # Make the API call
-            headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
-            api_url = f"{self.api_url}/api/branches/{branch_id}/tax_rate/"
-            
-            response = requests.put(
-                api_url,
-                json={"tax_rate": tax_rate},
-                headers=headers
-            )
-            
-            if response.status_code == 200:
-                QMessageBox.information(self, "نجاح", "تم تحديث نسبة الضريبة بنجاح")
-                
-                # Ensure the parent window refreshes the branches list
-                if self.parent():
-                    self.parent().load_branches()
-                
-                self.accept()
-            else:
-                error_msg = f"فشل تحديث نسبة الضريبة: رمز الحالة {response.status_code}"
-                try:
-                    error_data = response.json()
-                    if "detail" in error_data:
-                        error_msg = error_data["detail"]
-                except:
-                    pass
-                QMessageBox.warning(self, "خطأ", error_msg)
-        except requests.exceptions.ConnectionError:
-            QMessageBox.critical(
-                self,
-                "خطأ في الاتصال",
-                "تعذر الاتصال بالخادم. الرجاء التحقق من اتصالك بالإنترنت وحالة الخادم."
-            )
-        except Exception as e:
-            QMessageBox.critical(
-                self,
-                "خطأ",
-                f"حدث خطأ غير متوقع: {str(e)}"
-            )
+        except ValueError:
+            QMessageBox.warning(self, "تنبيه", "الرجاء إدخال قيمة رقمية صحيحة لنسبة الضريبة")
+            return
+        
+        branch_id = self.branch_id_input.text().strip()
+        self.save_button.setEnabled(False)
+        self.loading_label.show()
+        self.worker = SaveTaxRateWorker(self.api_url, branch_id, tax_rate, self.token)
+        self.worker.finished.connect(self.on_save_finished)
+        self.worker.start()
+
+    def on_save_finished(self, success, message):
+        self.loading_label.hide()
+        self.save_button.setEnabled(True)
+        if success:
+            QMessageBox.information(self, "نجاح", message)
+            if self.parent():
+                self.parent().load_branches()
+            self.accept()
+        else:
+            QMessageBox.warning(self, "خطأ", message)
 
 class TaxManagement(QWidget):
     """Tax management widget."""
@@ -215,6 +243,13 @@ class TaxManagement(QWidget):
         """)
         layout.addWidget(self.branches_table)
         
+        # Loading indicator
+        self.loading_label = QLabel("جاري تحميل الفروع...")
+        self.loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.loading_label.setStyleSheet("color: #3498db; font-weight: bold;")
+        self.loading_label.hide()
+        layout.addWidget(self.loading_label)
+
         self.setLayout(layout)
         
         # Load branches
@@ -222,22 +257,29 @@ class TaxManagement(QWidget):
     
     def load_branches(self):
         """Load branches from API."""
-        try:
-            headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
-            response = requests.get(f"{self.api_url}/branches/", headers=headers)
-            
-            if response.status_code == 200:
-                self.branches = response.json()
-                self.update_table()
-            else:
-                QMessageBox.warning(self, "خطأ", f"فشل تحميل الفروع: رمز الحالة {response.status_code}")
-        except Exception as e:
-            print(f"Error loading branches: {e}")
-            QMessageBox.critical(
-                self,
-                "خطأ في الاتصال",
-                "تعذر الاتصال بالخادم. الرجاء التحقق من اتصالك بالإنترنت وحالة الخادم."
-            )
+        self.loading_label.show()
+        self.branches_table.setEnabled(False)
+        self.add_tax_button.setEnabled(False)
+        self.refresh_button.setEnabled(False)
+        self.worker = LoadBranchesWorker(self.api_url, self.token)
+        self.worker.finished.connect(self.on_branches_loaded)
+        self.worker.error.connect(self.on_branches_error)
+        self.worker.start()
+
+    def on_branches_loaded(self, branches):
+        self.loading_label.hide()
+        self.branches_table.setEnabled(True)
+        self.add_tax_button.setEnabled(True)
+        self.refresh_button.setEnabled(True)
+        self.branches = branches
+        self.update_table()
+
+    def on_branches_error(self, error_msg):
+        self.loading_label.hide()
+        self.branches_table.setEnabled(True)
+        self.add_tax_button.setEnabled(True)
+        self.refresh_button.setEnabled(True)
+        QMessageBox.critical(self, "خطأ في الاتصال", error_msg)
     
     def update_table(self):
         """Update the branches table."""

@@ -383,7 +383,6 @@ class InventoryTab(QWidget):
     def _process_tax_data(self, data):
         """Process tax data with optimized performance."""
         try:
-            
             # Disable updates while processing
             self.tax_table.setUpdatesEnabled(False)
             self.transactions_table.setUpdatesEnabled(False)
@@ -405,10 +404,20 @@ class InventoryTab(QWidget):
             
             # Update tax table
             branch_summary = data.get('branch_summary', [])
+            if not branch_summary:
+                self.tax_table.setRowCount(0)
+                self.tax_table.setUpdatesEnabled(True)
+                self.tax_table.viewport().update()
+                # Also clear transactions table if needed
+                transactions = data.get('transactions', [])
+                if not transactions:
+                    self.transactions_table.setRowCount(0)
+                    self.transactions_table.setUpdatesEnabled(True)
+                    self.transactions_table.viewport().update()
+                return
             self.tax_table.setRowCount(len(branch_summary))
             
             for i, branch in enumerate(branch_summary):
-                
                 items = [
                     branch.get('branch_name', ''),
                     f"{branch.get('tax_rate', 0):.2f}%",
@@ -419,46 +428,50 @@ class InventoryTab(QWidget):
                     f"{branch.get('tax_amount', 0):,.2f}",  # Profit equals tax amount
                     branch.get('currency', '')
                 ]
-                
-                for j, value in enumerate(items):
-                    item = QTableWidgetItem(value)
-                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                    if j in [3, 4, 5, 6]:  # Money columns
-                        item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-                    self.tax_table.setItem(i, j, item)
-                    
+                if i < self.tax_table.rowCount():
+                    for j, value in enumerate(items):
+                        item = QTableWidgetItem(value)
+                        item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                        if j in [3, 4, 5, 6]:  # Money columns
+                            item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                        self.tax_table.setItem(i, j, item)
+            
             # Update transactions table
             transactions = data.get('transactions', [])
-            self.transactions_table.setRowCount(len(transactions))
-            
-            for i, tx in enumerate(transactions):
-
-                # Get status color and text
-                status = tx.get('status', '')
-                status_color = self._get_status_color(status)
-                status_text = self._get_status_text(status)
+            if not transactions:
+                self.transactions_table.setRowCount(0)
+                self.transactions_table.setUpdatesEnabled(True)
+                self.transactions_table.viewport().update()
+            else:
+                self.transactions_table.setRowCount(len(transactions))
                 
-                items = [
-                    tx.get('id', ''),
-                    tx.get('date', ''),
-                    f"{tx.get('amount', 0):,.2f}",
-                    f"{tx.get('benefited_amount', 0):,.2f}",
-                    f"{tx.get('tax_rate', 0):.2f}%",
-                    f"{tx.get('tax_amount', 0):,.2f}",
-                    tx.get('currency', ''),
-                    tx.get('source_branch', ''),
-                    tx.get('destination_branch', ''),
-                    status_text
-                ]
-                
-                for j, value in enumerate(items):
-                    item = QTableWidgetItem(str(value))
-                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                    if j in [2, 3, 5]:  # Money columns
-                        item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-                    if j == 9:  # Status column
-                        item.setForeground(status_color)
-                    self.transactions_table.setItem(i, j, item)
+                for i, tx in enumerate(transactions):
+                    status = tx.get('status', '')
+                    status_color = self._get_status_color(status)
+                    status_text = self._get_status_text(status)
+                    
+                    items = [
+                        tx.get('id', ''),
+                        tx.get('date', ''),
+                        f"{tx.get('amount', 0):,.2f}",
+                        f"{tx.get('benefited_amount', 0):,.2f}",
+                        f"{tx.get('tax_rate', 0):.2f}%",
+                        f"{tx.get('tax_amount', 0):,.2f}",
+                        tx.get('currency', ''),
+                        tx.get('source_branch', ''),
+                        tx.get('destination_branch', ''),
+                        status_text
+                    ]
+                    
+                    if i < self.transactions_table.rowCount():
+                        for j, value in enumerate(items):
+                            item = QTableWidgetItem(str(value))
+                            item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                            if j in [2, 3, 5]:  # Money columns
+                                item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                            if j == 9:  # Status column
+                                item.setForeground(status_color)
+                            self.transactions_table.setItem(i, j, item)
             
         except Exception as e:
             logger.error(f"Error in _process_tax_data: {str(e)}")
