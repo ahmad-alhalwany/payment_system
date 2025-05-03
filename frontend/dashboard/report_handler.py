@@ -4,10 +4,34 @@ from PyQt6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QHeaderView
 )
 from PyQt6.QtGui import QFont, QColor
-from PyQt6.QtCore import Qt, QDate
+from PyQt6.QtCore import Qt, QDate, QThread, pyqtSignal
 from ui.custom_widgets import ModernGroupBox, ModernButton
 from utils.helpers import get_status_arabic, get_status_color
 import requests
+
+class ReportWorker(QThread):
+    result_ready = pyqtSignal(dict, str)
+    error_occurred = pyqtSignal(str)
+    def __init__(self, url, headers, params, report_type):
+        super().__init__()
+        self.url = url
+        self.headers = headers
+        self.params = params
+        self.report_type = report_type
+    def run(self):
+        try:
+            response = requests.get(self.url, headers=self.headers, params=self.params)
+            if response.status_code == 200:
+                self.result_ready.emit(response.json(), self.report_type)
+            else:
+                try:
+                    error_data = response.json()
+                    msg = error_data.get("detail", f"HTTP {response.status_code}")
+                except:
+                    msg = f"HTTP {response.status_code}"
+                self.error_occurred.emit(msg)
+        except Exception as e:
+            self.error_occurred.emit(str(e))
 
 class ReportHandlerMixin:
     """Mixin class handling report generation and export functionality"""
@@ -109,193 +133,171 @@ class ReportHandlerMixin:
             "تقرير الفروع": "branch",
             "تقرير الموظفين": "employees"
         }
-        
         report_type = report_type_map.get(self.report_type.currentText(), "transactions")
         start_date = self.from_date.date().toString("yyyy-MM-dd")
         end_date = self.to_date.date().toString("yyyy-MM-dd")
         branch_id = self.report_branch_filter.currentData()
-        
-        # Ensure branch_id is not the API URL
         if branch_id == self.api_url:
             branch_id = None
-            
-        try:
-            headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
-            params = {}
+        headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
+        params = {}
+        url = None
+        if report_type == "transactions":
+            params["start_date"] = start_date
+            params["end_date"] = end_date
             if branch_id:
                 params["branch_id"] = branch_id
-            
-            self.statusBar().showMessage("جاري تحميل التقرير...")
-            
+            url = f"{self.api_url}/transactions/"
+        elif report_type == "branch":
+            params["start_date"] = start_date
+            params["end_date"] = end_date
+            if branch_id:
+                params["branch_id"] = branch_id
+            url = f"{self.api_url}/reports/branch/"
+        elif report_type == "employees":
+            if branch_id:
+                params["branch_id"] = branch_id
+            url = f"{self.api_url}/users/"
+        else:
+            self.statusBar().showMessage("نوع التقرير غير مدعوم", 5000)
+            return
+        self.statusBar().showMessage("جاري تحميل التقرير...")
+        self.report_table.setRowCount(0)
+        self.report_worker = ReportWorker(url, headers, params, report_type)
+        self.report_worker.result_ready.connect(self._on_report_data_ready)
+        self.report_worker.error_occurred.connect(self._on_report_error)
+        self.report_worker.start()
+
+    def _on_report_data_ready(self, data, report_type):
+        if report_type == "transactions":
+            items = data.get("transactions", [])
+        elif report_type == "branch":
+            items = []
+            branch_report = data.get("branch_report", {})
+            for branch_id, stats in branch_report.items():
+                branch = self.branch_id_to_name.get(branch_id, f"الفرع {branch_id}")
+                items.append({
+                    "branch_id": branch_id,
+                    "name": branch,
+                    "total_syp": stats.get("total_syp", 0),
+                    "total_usd": stats.get("total_usd", 0),
+                    "count": stats.get("count", 0)
+                })
+        elif report_type == "employees":
+            items = data.get("users", [])
+        elif report_type == "daily":
+            items = []
+            daily_report = data.get("daily_report", {})
+            for date_str, stats in daily_report.items():
+                items.append({
+                    "date": date_str,
+                    "total_syp": stats.get("total_syp", 0),
+                    "total_usd": stats.get("total_usd", 0),
+                    "count": stats.get("count", 0)
+                })
+        else:
+            items = []
+        
+        # Set up table columns based on report type
+        if report_type == "transactions":
+            self.report_table.setColumnCount(10)
+            self.report_table.setHorizontalHeaderLabels([
+                "النوع", "رقم التحويل", "المرسل", "المستلم", "المبلغ", 
+                "التاريخ", "الحالة", "الفرع المرسل", "الفرع المستلم", "اسم الموظف"
+            ])
+        elif report_type == "branch":
+            self.report_table.setColumnCount(5)
+            self.report_table.setHorizontalHeaderLabels([
+                "رقم الفرع", "اسم الفرع", "إجمالي الليرة", "إجمالي الدولار", "عدد التحويلات"
+            ])
+        elif report_type == "employees":
+            self.report_table.setColumnCount(5)
+            self.report_table.setHorizontalHeaderLabels([
+                "اسم المستخدم", "الدور", "الفرع", "تاريخ الإنشاء", "الحالة"
+            ])
+        elif report_type == "daily":
+            self.report_table.setColumnCount(4)
+            self.report_table.setHorizontalHeaderLabels([
+                "التاريخ", "إجمالي الليرة", "إجمالي الدولار", "عدد التحويلات"
+            ])
+        
+        self.report_table.setRowCount(len(items))
+        
+        # Load branch names if not cached
+        if not hasattr(self, 'branch_id_to_name') or not self.branch_id_to_name:
+            self.branch_id_to_name = {}
+            branches_response = self.api_client.get_branches()
+            if branches_response.status_code == 200:
+                branches = branches_response.json().get("branches", [])
+                self.branch_id_to_name = {b["id"]: b["name"] for b in branches}
+        
+        for i, item in enumerate(items):
             if report_type == "transactions":
-                params["start_date"] = start_date
-                params["end_date"] = end_date
-                response = requests.get(
-                    f"{self.api_url}/transactions/", 
-                    headers=headers,
-                    params=params
-                )
+                transaction_type = self.determine_transaction_type(item)
+                type_item = QTableWidgetItem(transaction_type)
+                if transaction_type == "داخلي":
+                    type_item.setForeground(QColor(0, 128, 0))
+                elif transaction_type == "صادر":
+                    type_item.setForeground(QColor(255, 0, 0))
+                elif transaction_type == "وارد":
+                    type_item.setForeground(QColor(0, 0, 255))
+                self.report_table.setItem(i, 0, type_item)
+                trans_id = str(item.get("id", ""))
+                id_item = QTableWidgetItem(trans_id[:8] + "..." if len(trans_id) > 8 else trans_id)
+                id_item.setToolTip(trans_id)
+                self.report_table.setItem(i, 1, id_item)
+                self.report_table.setItem(i, 2, QTableWidgetItem(item.get("sender", "")))
+                self.report_table.setItem(i, 3, QTableWidgetItem(item.get("receiver", "")))
+                amount = item.get("amount", 0)
+                currency = item.get("currency", "ليرة سورية")
+                amount_item = QTableWidgetItem(f"{amount:,.2f} {currency}")
+                amount_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                self.report_table.setItem(i, 4, amount_item)
+                date_str = item.get("date", "")
+                self.report_table.setItem(i, 5, QTableWidgetItem(date_str))
+                status = item.get("status", "").lower()
+                status_ar = get_status_arabic(status)
+                status_item = QTableWidgetItem(status_ar)
+                status_item.setBackground(get_status_color(status))
+                status_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.report_table.setItem(i, 6, status_item)
+                branch_id = item.get("branch_id")
+                sending_branch = self.branch_id_to_name.get(branch_id, f"الفرع {branch_id}" if branch_id else "غير معروف")
+                self.report_table.setItem(i, 7, QTableWidgetItem(sending_branch))
+                dest_branch_id = item.get("destination_branch_id")
+                receiving_branch = self.branch_id_to_name.get(dest_branch_id, f"الفرع {dest_branch_id}" if dest_branch_id else "غير معروف")
+                self.report_table.setItem(i, 8, QTableWidgetItem(receiving_branch))
+                self.report_table.setItem(i, 9, QTableWidgetItem(item.get("employee_name", "")))
+                self.report_table.item(i, 0).setData(Qt.ItemDataRole.UserRole, item)
             elif report_type == "branch":
-                params["start_date"] = start_date
-                params["end_date"] = end_date
-                response = requests.get(
-                    f"{self.api_url}/reports/branch/", 
-                    headers=headers,
-                    params=params
-                )
+                self.report_table.setItem(i, 0, QTableWidgetItem(str(item.get("branch_id", ""))))
+                self.report_table.setItem(i, 1, QTableWidgetItem(item.get("name", "")))
+                self.report_table.setItem(i, 2, QTableWidgetItem(f"{item.get('total_syp', 0):,.2f}"))
+                self.report_table.setItem(i, 3, QTableWidgetItem(f"{item.get('total_usd', 0):,.2f}"))
+                self.report_table.setItem(i, 4, QTableWidgetItem(str(item.get("count", 0))))
             elif report_type == "employees":
-                # Fetch all users (employees)
-                response = requests.get(
-                    f"{self.api_url}/users/", 
-                    headers=headers,
-                    params=params
-                )
-            else:
-                response = None
-            
-            if response and response.status_code == 200:
-                data = response.json()
-                
-                if report_type == "transactions":
-                    items = data.get("transactions", [])
-                elif report_type == "branch":
-                    items = []
-                    branch_report = data.get("branch_report", {})
-                    for branch_id, stats in branch_report.items():
-                        branch = self.branch_id_to_name.get(branch_id, f"الفرع {branch_id}")
-                        items.append({
-                            "branch_id": branch_id,
-                            "name": branch,
-                            "total_syp": stats.get("total_syp", 0),
-                            "total_usd": stats.get("total_usd", 0),
-                            "count": stats.get("count", 0)
-                        })
-                elif report_type == "employees":
-                    items = data.get("users", [])
-                elif report_type == "daily":
-                    items = []
-                    daily_report = data.get("daily_report", {})
-                    for date_str, stats in daily_report.items():
-                        items.append({
-                            "date": date_str,
-                            "total_syp": stats.get("total_syp", 0),
-                            "total_usd": stats.get("total_usd", 0),
-                            "count": stats.get("count", 0)
-                        })
-                else:
-                    items = []
-                
-                # Set up table columns based on report type
-                if report_type == "transactions":
-                    self.report_table.setColumnCount(10)
-                    self.report_table.setHorizontalHeaderLabels([
-                        "النوع", "رقم التحويل", "المرسل", "المستلم", "المبلغ", 
-                        "التاريخ", "الحالة", "الفرع المرسل", "الفرع المستلم", "اسم الموظف"
-                    ])
-                elif report_type == "branch":
-                    self.report_table.setColumnCount(5)
-                    self.report_table.setHorizontalHeaderLabels([
-                        "رقم الفرع", "اسم الفرع", "إجمالي الليرة", "إجمالي الدولار", "عدد التحويلات"
-                    ])
-                elif report_type == "employees":
-                    self.report_table.setColumnCount(5)
-                    self.report_table.setHorizontalHeaderLabels([
-                        "اسم المستخدم", "الدور", "الفرع", "تاريخ الإنشاء", "الحالة"
-                    ])
-                elif report_type == "daily":
-                    self.report_table.setColumnCount(4)
-                    self.report_table.setHorizontalHeaderLabels([
-                        "التاريخ", "إجمالي الليرة", "إجمالي الدولار", "عدد التحويلات"
-                    ])
-                
-                self.report_table.setRowCount(len(items))
-                
-                # Load branch names if not cached
-                if not hasattr(self, 'branch_id_to_name') or not self.branch_id_to_name:
-                    self.branch_id_to_name = {}
-                    branches_response = self.api_client.get_branches()
-                    if branches_response.status_code == 200:
-                        branches = branches_response.json().get("branches", [])
-                        self.branch_id_to_name = {b["id"]: b["name"] for b in branches}
-                
-                for i, item in enumerate(items):
-                    if report_type == "transactions":
-                        transaction_type = self.determine_transaction_type(item)
-                        type_item = QTableWidgetItem(transaction_type)
-                        if transaction_type == "داخلي":
-                            type_item.setForeground(QColor(0, 128, 0))
-                        elif transaction_type == "صادر":
-                            type_item.setForeground(QColor(255, 0, 0))
-                        elif transaction_type == "وارد":
-                            type_item.setForeground(QColor(0, 0, 255))
-                        self.report_table.setItem(i, 0, type_item)
-                        trans_id = str(item.get("id", ""))
-                        id_item = QTableWidgetItem(trans_id[:8] + "..." if len(trans_id) > 8 else trans_id)
-                        id_item.setToolTip(trans_id)
-                        self.report_table.setItem(i, 1, id_item)
-                        self.report_table.setItem(i, 2, QTableWidgetItem(item.get("sender", "")))
-                        self.report_table.setItem(i, 3, QTableWidgetItem(item.get("receiver", "")))
-                        amount = item.get("amount", 0)
-                        currency = item.get("currency", "ليرة سورية")
-                        amount_item = QTableWidgetItem(f"{amount:,.2f} {currency}")
-                        amount_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-                        self.report_table.setItem(i, 4, amount_item)
-                        date_str = item.get("date", "")
-                        self.report_table.setItem(i, 5, QTableWidgetItem(date_str))
-                        status = item.get("status", "").lower()
-                        status_ar = get_status_arabic(status)
-                        status_item = QTableWidgetItem(status_ar)
-                        status_item.setBackground(get_status_color(status))
-                        status_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                        self.report_table.setItem(i, 6, status_item)
-                        branch_id = item.get("branch_id")
-                        sending_branch = self.branch_id_to_name.get(branch_id, f"الفرع {branch_id}" if branch_id else "غير معروف")
-                        self.report_table.setItem(i, 7, QTableWidgetItem(sending_branch))
-                        dest_branch_id = item.get("destination_branch_id")
-                        receiving_branch = self.branch_id_to_name.get(dest_branch_id, f"الفرع {dest_branch_id}" if dest_branch_id else "غير معروف")
-                        self.report_table.setItem(i, 8, QTableWidgetItem(receiving_branch))
-                        self.report_table.setItem(i, 9, QTableWidgetItem(item.get("employee_name", "")))
-                        self.report_table.item(i, 0).setData(Qt.ItemDataRole.UserRole, item)
-                    elif report_type == "branch":
-                        self.report_table.setItem(i, 0, QTableWidgetItem(str(item.get("branch_id", ""))))
-                        self.report_table.setItem(i, 1, QTableWidgetItem(item.get("name", "")))
-                        self.report_table.setItem(i, 2, QTableWidgetItem(f"{item.get('total_syp', 0):,.2f}"))
-                        self.report_table.setItem(i, 3, QTableWidgetItem(f"{item.get('total_usd', 0):,.2f}"))
-                        self.report_table.setItem(i, 4, QTableWidgetItem(str(item.get("count", 0))))
-                    elif report_type == "employees":
-                        self.report_table.setItem(i, 0, QTableWidgetItem(item.get("username", "")))
-                        self.report_table.setItem(i, 1, QTableWidgetItem(item.get("role", "")))
-                        branch_name = self.branch_id_to_name.get(item.get("branch_id"), "غير معروف")
-                        self.report_table.setItem(i, 2, QTableWidgetItem(branch_name))
-                        self.report_table.setItem(i, 3, QTableWidgetItem(item.get("created_at", "")))
-                        status = "نشط" if item.get("role") != "deleted" else "محذوف"
-                        self.report_table.setItem(i, 4, QTableWidgetItem(status))
-                    elif report_type == "daily":
-                        self.report_table.setItem(i, 0, QTableWidgetItem(item.get("date", "")))
-                        self.report_table.setItem(i, 1, QTableWidgetItem(f"{item.get('total_syp', 0):,.2f}"))
-                        self.report_table.setItem(i, 2, QTableWidgetItem(f"{item.get('total_usd', 0):,.2f}"))
-                        self.report_table.setItem(i, 3, QTableWidgetItem(str(item.get("count", 0))))
-                
-                self.report_table.horizontalHeader().setStretchLastSection(True)
-                self.report_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-                self.report_table.setSortingEnabled(True)
-                self.statusBar().showMessage("تم إنشاء التقرير بنجاح", 3000)
-                QMessageBox.information(self, "نجاح", "تم إنشاء التقرير بنجاح")
-            else:
-                error_msg = "فشل إنشاء التقرير"
-                try:
-                    error_data = response.json()
-                    if "detail" in error_data:
-                        error_msg = error_data["detail"]
-                except:
-                    error_msg = f"فشل إنشاء التقرير: رمز الحالة {response.status_code}"
-                self.statusBar().showMessage(error_msg, 5000)
-                QMessageBox.warning(self, "خطأ", error_msg)
-        except Exception as e:
-            print(f"Error generating report: {e}")
-            error_msg = f"تعذر إنشاء التقرير: {str(e)}"
-            self.statusBar().showMessage(error_msg, 5000)
-            QMessageBox.warning(self, "خطأ", error_msg)
+                self.report_table.setItem(i, 0, QTableWidgetItem(item.get("username", "")))
+                self.report_table.setItem(i, 1, QTableWidgetItem(item.get("role", "")))
+                branch_name = self.branch_id_to_name.get(item.get("branch_id"), "غير معروف")
+                self.report_table.setItem(i, 2, QTableWidgetItem(branch_name))
+                self.report_table.setItem(i, 3, QTableWidgetItem(item.get("created_at", "")))
+                status = "نشط" if item.get("role") != "deleted" else "محذوف"
+                self.report_table.setItem(i, 4, QTableWidgetItem(status))
+            elif report_type == "daily":
+                self.report_table.setItem(i, 0, QTableWidgetItem(item.get("date", "")))
+                self.report_table.setItem(i, 1, QTableWidgetItem(f"{item.get('total_syp', 0):,.2f}"))
+                self.report_table.setItem(i, 2, QTableWidgetItem(f"{item.get('total_usd', 0):,.2f}"))
+                self.report_table.setItem(i, 3, QTableWidgetItem(str(item.get("count", 0))))
+        
+        self.report_table.horizontalHeader().setStretchLastSection(True)
+        self.report_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.report_table.setSortingEnabled(True)
+        self.statusBar().showMessage("تم إنشاء التقرير بنجاح", 3000)
+        QMessageBox.information(self, "نجاح", "تم إنشاء التقرير بنجاح")
+
+    def _on_report_error(self, msg):
+        self.statusBar().showMessage(msg, 5000)
+        QMessageBox.warning(self, "خطأ", msg)
 
     def export_pdf(self):
         """Export the current report as PDF."""
