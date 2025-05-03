@@ -13,6 +13,11 @@ from fastapi.middleware.cors import CORSMiddleware
 import sqlalchemy.exc
 from functools import lru_cache
 import logging
+from fastapi.responses import FileResponse
+import shutil
+from fastapi import UploadFile, File
+import os
+from starlette.background import BackgroundTask
 
 app = FastAPI()
 
@@ -2212,7 +2217,6 @@ def tax_summary_endpoint(
             "branch_summary": branch_summary,
             "transactions": tx_list
         }
-        print("[DEBUG] Backend tax_summary_endpoint response:", response_data)
         return response_data
 
     except ValueError as e:
@@ -2225,4 +2229,42 @@ def tax_summary_endpoint(
             status_code=500,
             detail=f"Error retrieving tax summary: {str(e)}"
         )
+
+@app.get("/backup/")
+def download_backup(current_user: dict = Depends(get_current_user)):
+    # السماح فقط للمديرين
+    if current_user["role"] != "director":
+        raise HTTPException(status_code=403, detail="Director access required")
+    db_path = "transactions.db"
+    backup_path = "system_backup_temp.sqlite"
+    # عمل نسخة مؤقتة حتى لا تتعارض مع عمليات الكتابة
+    try:
+        shutil.copyfile(db_path, backup_path)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Backup failed: {str(e)}")
+    response = FileResponse(backup_path, filename="system_backup.sqlite", media_type="application/octet-stream")
+    # حذف الملف المؤقت بعد الإرسال
+    import os
+    from starlette.background import BackgroundTask
+    response.background = BackgroundTask(lambda: os.remove(backup_path))
+    return response
+
+@app.post("/restore/")
+async def restore_backup(
+    file: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user)
+):
+    if current_user["role"] != "director":
+        raise HTTPException(status_code=403, detail="Director access required")
+    db_path = "transactions.db"
+    try:
+        # احفظ الملف المرفوع مؤقتاً
+        temp_path = "restore_temp.sqlite"
+        with open(temp_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        # استبدل قاعدة البيانات القديمة بالجديدة
+        shutil.move(temp_path, db_path)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Restore failed: {str(e)}")
+    return {"status": "success", "message": "تمت الاستعادة بنجاح"}
 

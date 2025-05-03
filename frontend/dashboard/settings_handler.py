@@ -4,9 +4,120 @@ import requests
 import datetime
 from PyQt6.QtWidgets import (
     QVBoxLayout, QFormLayout, QLineEdit, QComboBox,
-    QFileDialog, QMessageBox
+    QFileDialog, QMessageBox, QProgressBar, QLabel
 )
+from PyQt6.QtCore import QThread, pyqtSignal, Qt
 from ui.custom_widgets import ModernGroupBox, ModernButton
+
+class PasswordWorker(QThread):
+    finished = pyqtSignal(bool, str)
+    
+    def __init__(self, api_url, token, old_password, new_password):
+        super().__init__()
+        self.api_url = api_url
+        self.token = token
+        self.old_password = old_password
+        self.new_password = new_password
+    
+    def run(self):
+        try:
+            headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
+            data = {
+                "old_password": self.old_password,
+                "new_password": self.new_password
+            }
+            response = requests.post(f"{self.api_url}/change-password/", json=data, headers=headers)
+            
+            if response.status_code == 200:
+                self.finished.emit(True, "تم تغيير كلمة المرور بنجاح")
+            else:
+                error_msg = f"فشل تغيير كلمة المرور: رمز الحالة {response.status_code}"
+                try:
+                    error_data = response.json()
+                    if "detail" in error_data:
+                        error_msg = error_data["detail"]
+                except:
+                    pass
+                self.finished.emit(False, error_msg)
+        except Exception as e:
+            self.finished.emit(False, str(e))
+
+class BackupWorker(QThread):
+    finished = pyqtSignal(bool, str)
+    progress = pyqtSignal(int)
+    
+    def __init__(self, api_url, token, backup_file):
+        super().__init__()
+        self.api_url = api_url
+        self.token = token
+        self.backup_file = backup_file
+    
+    def run(self):
+        try:
+            headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
+            response = requests.get(f"{self.api_url}/backup/", headers=headers, stream=True)
+            
+            if response.status_code == 200:
+                total_size = int(response.headers.get('content-length', 0))
+                block_size = 8192
+                written = 0
+                
+                with open(self.backup_file, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=block_size):
+                        f.write(chunk)
+                        written += len(chunk)
+                        if total_size:
+                            progress = int((written / total_size) * 100)
+                            self.progress.emit(progress)
+                
+                self.finished.emit(True, self.backup_file)
+            else:
+                error_msg = f"فشل إنشاء النسخة الاحتياطية: رمز الحالة {response.status_code}"
+                try:
+                    error_data = response.json()
+                    if "detail" in error_data:
+                        error_msg = error_data["detail"]
+                except:
+                    pass
+                self.finished.emit(False, error_msg)
+        except Exception as e:
+            self.finished.emit(False, str(e))
+
+class RestoreWorker(QThread):
+    finished = pyqtSignal(bool, str)
+    progress = pyqtSignal(int)
+    
+    def __init__(self, api_url, token, backup_file):
+        super().__init__()
+        self.api_url = api_url
+        self.token = token
+        self.backup_file = backup_file
+    
+    def run(self):
+        try:
+            headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
+            
+            with open(self.backup_file, 'rb') as f:
+                files = {'backup_file': (os.path.basename(self.backup_file), f, 'application/zip')}
+                response = requests.post(
+                    f"{self.api_url}/restore/",
+                    headers=headers,
+                    files=files
+                )
+            
+            if response.status_code == 200:
+                self.finished.emit(True, "تم استعادة النسخة الاحتياطية بنجاح")
+            else:
+                error_msg = f"فشل استعادة النسخة الاحتياطية: رمز الحالة {response.status_code}"
+                try:
+                    error_data = response.json()
+                    if "detail" in error_data:
+                        error_msg = error_data["detail"]
+                except:
+                    pass
+                self.finished.emit(False, error_msg)
+        except Exception as e:
+            self.finished.emit(False, str(e))
 
 class SettingsHandlerMixin:
     """Mixin class handling system settings and maintenance functionality"""
@@ -17,6 +128,11 @@ class SettingsHandlerMixin:
         # System settings
         settings_group = ModernGroupBox("إعدادات النظام", "#3498db")
         settings_layout = QFormLayout()
+        
+        # Add cache for settings
+        self._settings_cache = {}
+        self._last_settings_load = 0
+        self._settings_cache_timeout = 300  # 5 minutes
         
         self.system_name_input = QLineEdit("نظام التحويلات المالية الداخلي")
         settings_layout.addRow("اسم النظام:", self.system_name_input)
@@ -78,6 +194,26 @@ class SettingsHandlerMixin:
         backup_group = ModernGroupBox("النسخ الاحتياطي واستعادة البيانات", "#9b59b6")
         backup_layout = QVBoxLayout()
         
+        # Add progress bars
+        self.backup_progress = QProgressBar()
+        self.backup_progress.setVisible(False)
+        self.backup_progress.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        backup_layout.addWidget(self.backup_progress)
+        
+        self.restore_progress = QProgressBar()
+        self.restore_progress.setVisible(False)
+        self.restore_progress.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        backup_layout.addWidget(self.restore_progress)
+        
+        # Add status labels
+        self.backup_status = QLabel("")
+        self.backup_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        backup_layout.addWidget(self.backup_status)
+        
+        self.restore_status = QLabel("")
+        self.restore_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        backup_layout.addWidget(self.restore_status)
+        
         backup_button = ModernButton("إنشاء نسخة احتياطية", color="#3498db")
         backup_button.clicked.connect(self.create_backup)
         backup_layout.addWidget(backup_button)
@@ -90,31 +226,81 @@ class SettingsHandlerMixin:
         layout.addWidget(backup_group)
         
         self.settings_tab.setLayout(layout)
+        
+        # Load initial settings
+        self.load_settings()
+
+    def load_settings(self):
+        """Load settings from file with caching."""
+        try:
+            current_time = datetime.datetime.now().timestamp()
+            
+            # Check if cache is valid
+            if (self._settings_cache and 
+                current_time - self._last_settings_load < self._settings_cache_timeout):
+                self._apply_settings(self._settings_cache)
+                return
+            
+            settings_file = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                "config",
+                "settings.json"
+            )
+            
+            if os.path.exists(settings_file):
+                with open(settings_file, 'r', encoding='utf-8') as f:
+                    settings = json.load(f)
+                    self._settings_cache = settings
+                    self._last_settings_load = current_time
+                    self._apply_settings(settings)
+                    
+        except Exception as e:
+            print(f"Error loading settings: {e}")
+
+    def _apply_settings(self, settings):
+        """Apply settings to UI elements."""
+        self.system_name_input.setText(settings.get("system_name", ""))
+        self.company_name_input.setText(settings.get("company_name", ""))
+        self.admin_email_input.setText(settings.get("admin_email", ""))
+        
+        currency = settings.get("default_currency", "ليرة سورية")
+        index = self.currency_input.findText(currency)
+        if index >= 0:
+            self.currency_input.setCurrentIndex(index)
+        
+        language = settings.get("language", "العربية")
+        index = self.language_input.findText(language)
+        if index >= 0:
+            self.language_input.setCurrentIndex(index)
+        
+        theme = settings.get("theme", "فاتح")
+        index = self.theme_input.findText(theme)
+        if index >= 0:
+            self.theme_input.setCurrentIndex(index)
+
     def save_settings(self):
-        """Save system settings."""
+        """Save system settings with optimized file handling."""
         try:
             # Get settings values
-            system_name = self.system_name_input.text()
-            company_name = self.company_name_input.text()
-            admin_email = self.admin_email_input.text()
-            currency = self.currency_input.currentText()
-            language = self.language_input.currentText()
-            theme = self.theme_input.currentText()
+            settings_data = {
+                "system_name": self.system_name_input.text(),
+                "company_name": self.company_name_input.text(),
+                "admin_email": self.admin_email_input.text(),
+                "default_currency": self.currency_input.currentText(),
+                "language": self.language_input.currentText(),
+                "theme": self.theme_input.currentText()
+            }
             
             # Validate inputs
-            if not system_name or not company_name or not admin_email:
+            if not all([settings_data["system_name"], 
+                       settings_data["company_name"], 
+                       settings_data["admin_email"]]):
                 QMessageBox.warning(self, "تنبيه", "الرجاء ملء جميع الحقول المطلوبة")
                 return
-                
-            # Create settings data
-            settings_data = {
-                "system_name": system_name,
-                "company_name": company_name,
-                "admin_email": admin_email,
-                "default_currency": currency,
-                "language": language,
-                "theme": theme
-            }
+            
+            # Update cache
+            self._settings_cache = settings_data
+            self._last_settings_load = datetime.datetime.now().timestamp()
             
             # Save settings to file
             settings_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config")
@@ -123,13 +309,31 @@ class SettingsHandlerMixin:
             
             with open(settings_file, 'w', encoding='utf-8') as f:
                 json.dump(settings_data, f, ensure_ascii=False, indent=4)
-                
+            
             QMessageBox.information(self, "نجاح", "تم حفظ الإعدادات بنجاح")
             
         except Exception as e:
             print(f"Error saving settings: {e}")
             QMessageBox.warning(self, "خطأ", f"تعذر حفظ الإعدادات: {str(e)}")
-    
+
+    def update_backup_progress(self, value):
+        """Update backup progress bar."""
+        self.backup_progress.setVisible(True)
+        self.backup_progress.setValue(value)
+        self.backup_status.setText(f"جاري النسخ الاحتياطي... {value}%")
+        if value >= 100:
+            self.backup_progress.setVisible(False)
+            self.backup_status.setText("")
+
+    def update_restore_progress(self, value):
+        """Update restore progress bar."""
+        self.restore_progress.setVisible(True)
+        self.restore_progress.setValue(value)
+        self.restore_status.setText(f"جاري الاستعادة... {value}%")
+        if value >= 100:
+            self.restore_progress.setVisible(False)
+            self.restore_status.setText("")
+
     def change_password(self):
         """Change the user's password."""
         old_password = self.old_password_input.text()
@@ -144,86 +348,56 @@ class SettingsHandlerMixin:
             QMessageBox.warning(self, "تنبيه", "كلمة المرور الجديدة وتأكيدها غير متطابقين")
             return
         
-        try:
-            headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
-            data = {
-                "old_password": old_password,
-                "new_password": new_password
-            }
-            response = requests.post(f"{self.api_url}/change-password/", json=data, headers=headers)
-            
-            if response.status_code == 200:
-                QMessageBox.information(self, "نجاح", "تم تغيير كلمة المرور بنجاح")
-                self.old_password_input.clear()
-                self.new_password_input.clear()
-                self.confirm_password_input.clear()
-            else:
-                error_msg = f"فشل تغيير كلمة المرور: رمز الحالة {response.status_code}"
-                try:
-                    error_data = response.json()
-                    if "detail" in error_data:
-                        error_msg = error_data["detail"]
-                except:
-                    pass
-                
-                QMessageBox.warning(self, "خطأ", error_msg)
-        except Exception as e:
-            print(f"Error changing password: {e}")
-            QMessageBox.warning(self, "خطأ", f"تعذر تغيير كلمة المرور: {str(e)}")
+        self.password_worker = PasswordWorker(self.api_url, self.token, old_password, new_password)
+        self.password_worker.finished.connect(self.on_password_change_complete)
+        self.password_worker.start()
+    
+    def on_password_change_complete(self, success, message):
+        if success:
+            QMessageBox.information(self, "نجاح", message)
+            self.old_password_input.clear()
+            self.new_password_input.clear()
+            self.confirm_password_input.clear()
+        else:
+            QMessageBox.warning(self, "خطأ", f"تعذر تغيير كلمة المرور: {message}")
     
     def create_backup(self):
         """Create a backup of the database."""
         try:
-            # Get backup directory from user
             backup_dir = QFileDialog.getExistingDirectory(
                 self, "اختر مجلد النسخ الاحتياطي", ""
             )
             
             if not backup_dir:
-                return  # User canceled
-                
-            # Create backup filename with timestamp
+                return
+            
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            backup_file = os.path.join(backup_dir, f"system_backup_{timestamp}.zip")
+            backup_file = os.path.join(backup_dir, f"system_backup_{timestamp}.sqlite")
             
-            # Request backup from server
-            headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
-            response = requests.get(f"{self.api_url}/backup/", headers=headers, stream=True)
+            self.backup_worker = BackupWorker(self.api_url, self.token, backup_file)
+            self.backup_worker.finished.connect(self.on_backup_complete)
+            self.backup_worker.progress.connect(self.update_backup_progress)
+            self.backup_worker.start()
             
-            if response.status_code == 200:
-                # Save backup file
-                with open(backup_file, 'wb') as f:
-                    for chunk in response.iter_content(chunk_size=8192):
-                        f.write(chunk)
-                        
-                QMessageBox.information(self, "نجاح", f"تم إنشاء النسخة الاحتياطية بنجاح في:\n{backup_file}")
-            else:
-                error_msg = f"فشل إنشاء النسخة الاحتياطية: رمز الحالة {response.status_code}"
-                try:
-                    error_data = response.json()
-                    if "detail" in error_data:
-                        error_msg = error_data["detail"]
-                except:
-                    pass
-                
-                QMessageBox.warning(self, "خطأ", error_msg)
-                
         except Exception as e:
-            print(f"Error creating backup: {e}")
             QMessageBox.warning(self, "خطأ", f"تعذر إنشاء النسخة الاحتياطية: {str(e)}")
+    
+    def on_backup_complete(self, success, message):
+        if success:
+            QMessageBox.information(self, "نجاح", f"تم إنشاء النسخة الاحتياطية بنجاح في:\n{message}")
+        else:
+            QMessageBox.warning(self, "خطأ", message)
     
     def restore_backup(self):
         """Restore from a backup."""
         try:
-            # Get backup file from user
             backup_file, _ = QFileDialog.getOpenFileName(
                 self, "اختر ملف النسخة الاحتياطية", "", "ملفات ZIP (*.zip)"
             )
             
             if not backup_file:
-                return  # User canceled
-                
-            # Confirm restore
+                return
+            
             confirm = QMessageBox.warning(
                 self,
                 "تأكيد الاستعادة",
@@ -234,33 +408,18 @@ class SettingsHandlerMixin:
             
             if confirm != QMessageBox.StandardButton.Yes:
                 return
-                
-            # Upload backup file to server
-            headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
             
-            with open(backup_file, 'rb') as f:
-                files = {'backup_file': (os.path.basename(backup_file), f, 'application/zip')}
-                response = requests.post(f"{self.api_url}/restore/", headers=headers, files=files)
+            self.restore_worker = RestoreWorker(self.api_url, self.token, backup_file)
+            self.restore_worker.finished.connect(self.on_restore_complete)
+            self.restore_worker.progress.connect(self.update_restore_progress)
+            self.restore_worker.start()
             
-            if response.status_code == 200:
-                QMessageBox.information(
-                    self, 
-                    "نجاح", 
-                    "تم استعادة النسخة الاحتياطية بنجاح. سيتم إعادة تشغيل النظام."
-                )
-                # In a real application, you would restart the application here
-            else:
-                error_msg = f"فشل استعادة النسخة الاحتياطية: رمز الحالة {response.status_code}"
-                try:
-                    error_data = response.json()
-                    if "detail" in error_data:
-                        error_msg = error_data["detail"]
-                except:
-                    pass
-                
-                QMessageBox.warning(self, "خطأ", error_msg)
-                
         except Exception as e:
-            print(f"Error restoring backup: {e}")
             QMessageBox.warning(self, "خطأ", f"تعذر استعادة النسخة الاحتياطية: {str(e)}")
+    
+    def on_restore_complete(self, success, message):
+        if success:
+            QMessageBox.information(self, "نجاح", message + "\nسيتم إعادة تشغيل النظام.")
+        else:
+            QMessageBox.warning(self, "خطأ", message)
     
