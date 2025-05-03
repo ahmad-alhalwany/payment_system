@@ -1500,3 +1500,12 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
             
         except Exception as e:
             self.statusBar().showMessage(f"خطأ في تحديث إحصائيات الفروع: {str(e)}", 5000)
+
+    def closeEvent(self, event):
+        if hasattr(self, 'load_thread') and self.load_thread.isRunning():
+            self.load_thread.quit()
+            self.load_thread.wait()
+        if hasattr(self, 'stats_loader') and self.stats_loader.isRunning():
+            self.stats_loader.quit()
+            self.stats_loader.wait()
+        super().closeEvent(event)

@@ -866,6 +866,12 @@ class BranchManagementMixin:
         except Exception as e:
             QMessageBox.critical(self, "خطأ", f"حدث خطأ في قراءة بيانات الفرع: {str(e)}")
 
+    def closeEvent(self, event):
+        if hasattr(self, 'branch_load_worker') and self.branch_load_worker.isRunning():
+            self.branch_load_worker.quit()
+            self.branch_load_worker.wait()
+        super().closeEvent(event)
+
 class BranchLoadWorker(QThread):
     branches_loaded = pyqtSignal(list)
     error_occurred = pyqtSignal(str)
