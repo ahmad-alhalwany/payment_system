@@ -1,8 +1,120 @@
 import os
 from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QComboBox, QMessageBox, QWidget, QTableWidget, QTableWidgetItem, QHeaderView
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QFont
 import requests
+
+class LoadEmployeesWorker(QThread):
+    """Worker thread for loading employees data"""
+    finished = pyqtSignal(list)
+    error = pyqtSignal(str)
+    
+    def __init__(self, api_url, branch_id, token):
+        super().__init__()
+        self.api_url = api_url
+        self.branch_id = branch_id
+        self.token = token
+        
+    def run(self):
+        try:
+            headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
+            response = requests.get(f"{self.api_url}/branches/{self.branch_id}/employees/", headers=headers)
+            
+            if response.status_code == 200:
+                self.finished.emit(response.json())
+            else:
+                self.error.emit(f"فشل في تحميل الموظفين! الخطأ: {response.status_code}")
+        except Exception as e:
+            self.error.emit(f"تعذر الاتصال بالخادم: {str(e)}")
+
+class SaveEmployeeWorker(QThread):
+    """Worker thread for saving employee data"""
+    finished = pyqtSignal(bool, str)
+    
+    def __init__(self, api_url, token, data):
+        super().__init__()
+        self.api_url = api_url
+        self.token = token
+        self.data = data
+        
+    def run(self):
+        try:
+            headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
+            response = requests.post(
+                f"{self.api_url}/users/", 
+                json=self.data, 
+                headers=headers,
+                timeout=5
+            )
+            
+            if response.status_code == 200:
+                self.finished.emit(True, "تمت إضافة الموظف بنجاح!")
+            else:
+                error_details = response.json().get("detail", "خطأ غير معروف")
+                self.finished.emit(False, f"فشل في الإضافة: {response.status_code}\nالتفاصيل: {error_details}")
+        except requests.exceptions.RequestException as e:
+            self.finished.emit(False, f"تعذر الاتصال بالخادم: {str(e)}")
+
+class UpdateEmployeeWorker(QThread):
+    """Worker thread for updating employee data"""
+    finished = pyqtSignal(bool, str)
+    
+    def __init__(self, api_url, token, employee_id, data):
+        super().__init__()
+        self.api_url = api_url
+        self.token = token
+        self.employee_id = employee_id
+        self.data = data
+        
+    def run(self):
+        try:
+            headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
+            response = requests.put(
+                f"{self.api_url}/users/{self.employee_id}/",
+                json=self.data,
+                headers=headers
+            )
+            
+            if response.status_code == 200:
+                self.finished.emit(True, "تم تحديث بيانات الموظف بنجاح!")
+            else:
+                error_msg = f"فشل التحديث: {response.status_code}"
+                try:
+                    error_details = response.json().get("detail", "")
+                    error_msg += f"\nالتفاصيل: {error_details}"
+                except:
+                    pass
+                self.finished.emit(False, error_msg)
+        except Exception as e:
+            self.finished.emit(False, f"تعذر الاتصال بالخادم: {str(e)}")
+
+class DeleteEmployeeWorker(QThread):
+    """Worker thread for deleting employee"""
+    finished = pyqtSignal(bool, str)
+    
+    def __init__(self, api_url, token, employee_id):
+        super().__init__()
+        self.api_url = api_url
+        self.token = token
+        self.employee_id = employee_id
+        
+    def run(self):
+        try:
+            headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
+            response = requests.delete(f"{self.api_url}/users/{self.employee_id}", headers=headers)
+            
+            if response.status_code in [200, 204]:
+                self.finished.emit(True, "تم حذف الموظف بنجاح")
+            else:
+                error_msg = f"فشل حذف الموظف: رمز الحالة {response.status_code}"
+                try:
+                    error_data = response.json()
+                    error_msg = error_data.get("detail", error_msg)
+                except:
+                    pass
+                self.finished.emit(False, error_msg)
+        except Exception as e:
+            self.finished.emit(False, f"تعذر حذف الموظف: {str(e)}")
 
 class UserManagement(QDialog):
     def __init__(self, branch_id, token=None):
@@ -271,6 +383,13 @@ class UserManagement(QDialog):
         self.layout.addSpacing(15)
         self.layout.addWidget(buttons_container)
         
+        # Add loading indicator
+        self.loading_label = QLabel("جاري التحميل...")
+        self.loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.loading_label.setStyleSheet("color: #3498db; font-weight: bold;")
+        self.loading_label.hide()
+        self.layout.addWidget(self.loading_label)
+        
         self.setLayout(self.layout)
         
         # Load employees data
@@ -278,20 +397,27 @@ class UserManagement(QDialog):
 
     def load_employees(self):
         """Load employees data for this branch."""
-        try:
-            api_url = os.environ["API_URL"]
-            headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
-            response = requests.get(f"{api_url}/branches/{self.branch_id}/employees/", headers=headers)
-            
-            if response.status_code == 200:
-                self.all_employees = response.json()
-                # Apply any existing filters
-                self.filter_employees()
-            else:
-                QMessageBox.warning(self, "خطأ", f"فشل في تحميل الموظفين! الخطأ: {response.status_code}")
-        except Exception as e:
-            QMessageBox.warning(self, "خطأ", f"تعذر الاتصال بالخادم: {str(e)}")
-            
+        self.loading_label.show()
+        self.employees_table.setEnabled(False)
+        
+        self.worker = LoadEmployeesWorker(self.api_url, self.branch_id, self.token)
+        self.worker.finished.connect(self.on_employees_loaded)
+        self.worker.error.connect(self.on_employees_error)
+        self.worker.start()
+    
+    def on_employees_loaded(self, employees):
+        """Handle loaded employees data"""
+        self.all_employees = employees
+        self.filter_employees()
+        self.loading_label.hide()
+        self.employees_table.setEnabled(True)
+    
+    def on_employees_error(self, error_msg):
+        """Handle employees loading error"""
+        self.loading_label.hide()
+        self.employees_table.setEnabled(True)
+        QMessageBox.warning(self, "خطأ", error_msg)
+
     def filter_employees(self):
         """Filter employees based on search text and role filter."""
         # Get filter criteria
@@ -500,6 +626,13 @@ class AddEmployeeDialog(QDialog):
         """)
         layout.addWidget(self.save_button)
 
+        # Add loading indicator
+        self.loading_label = QLabel("جاري الحفظ...")
+        self.loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.loading_label.setStyleSheet("color: #3498db; font-weight: bold;")
+        self.loading_label.hide()
+        layout.addWidget(self.loading_label)
+
         self.name_input.textChanged.connect(self.validate_inputs)
         self.password_input.textChanged.connect(self.validate_inputs)
 
@@ -550,36 +683,25 @@ class AddEmployeeDialog(QDialog):
             "role": "branch_manager" if self.role_input.currentText() == "مدير فرع" else "employee",
             "branch_id": self.branch_input.currentData()
         }
+        
+        self.save_button.setEnabled(False)
+        self.loading_label.show()
+        
+        self.worker = SaveEmployeeWorker(self.api_url, self.token, data)
+        self.worker.finished.connect(self.on_save_finished)
+        self.worker.start()
+    
+    def on_save_finished(self, success, message):
+        """Handle save operation completion"""
+        self.loading_label.hide()
+        self.save_button.setEnabled(True)
+        
+        if success:
+            QMessageBox.information(self, "نجاح", message)
+            self.accept()
+        else:
+            QMessageBox.warning(self, "خطأ", message)
 
-        try:
-            # Ensure token is properly formatted with Bearer prefix
-            headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
-            
-            # Use /users/ endpoint instead of /register/ as it has the same functionality but with better error handling
-            response = requests.post(
-                f"{self.api_url}/users/", 
-                json=data, 
-                headers=headers,
-                timeout=5  # إضافة مهلة للاتصال
-            )
-            if response.status_code == 200:  # عادةً 201 للإنشاء الناجح
-                QMessageBox.information(self, "نجاح", "تمت إضافة الموظف بنجاح!")
-                self.accept()
-            else:
-                error_details = response.json().get("detail", "خطأ غير معروف")
-                QMessageBox.warning(
-                    self, 
-                    "خطأ", 
-                    f"فشل في الإضافة: {response.status_code}\nالتفاصيل: {error_details}"
-                )
-        except requests.exceptions.RequestException as e:
-            QMessageBox.warning(
-                self, 
-                "خطأ اتصال", 
-                f"تعذر الاتصال بالخادم: {str(e)}"
-            )
-            
-            
 class EditEmployeeDialog(QDialog):
     def __init__(self, employee_data, token=None, is_admin=False, current_branch_id=None, current_user_id=None):
         super().__init__()
@@ -716,6 +838,13 @@ class EditEmployeeDialog(QDialog):
         """)
         layout.addWidget(self.save_button)
 
+        # Add loading indicator
+        self.loading_label = QLabel("جاري الحفظ...")
+        self.loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.loading_label.setStyleSheet("color: #3498db; font-weight: bold;")
+        self.loading_label.hide()
+        layout.addWidget(self.loading_label)
+
         self.setLayout(layout)
 
     def load_branches(self):
@@ -837,27 +966,21 @@ class EditEmployeeDialog(QDialog):
             "role": new_role,
             "branch_id": new_branch
         }
-
-        # Send request
-        try:
-            headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
-            response = requests.put(
-                f"{self.api_url}/users/{self.employee_data.get('id')}/",
-                json=data,
-                headers=headers
-            )
-
-            if response.status_code == 200:
-                QMessageBox.information(self, "نجاح", "تم تحديث بيانات الموظف بنجاح!")
-                self.accept()
-            else:
-                error_msg = f"فشل التحديث: {response.status_code}"
-                try:
-                    error_details = response.json().get("detail", "")
-                    error_msg += f"\nالتفاصيل: {error_details}"
-                except:
-                    pass
-                QMessageBox.warning(self, "خطأ", error_msg)
-
-        except Exception as e:
-            QMessageBox.warning(self, "خطأ", f"تعذر الاتصال بالخادم: {str(e)}")
+        
+        self.save_button.setEnabled(False)
+        self.loading_label.show()
+        
+        self.worker = UpdateEmployeeWorker(self.api_url, self.token, self.employee_data.get('id'), data)
+        self.worker.finished.connect(self.on_save_finished)
+        self.worker.start()
+    
+    def on_save_finished(self, success, message):
+        """Handle save operation completion"""
+        self.loading_label.hide()
+        self.save_button.setEnabled(True)
+        
+        if success:
+            QMessageBox.information(self, "نجاح", message)
+            self.accept()
+        else:
+            QMessageBox.warning(self, "خطأ", message)
