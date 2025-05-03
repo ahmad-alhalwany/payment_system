@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (
     QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView,
     QMessageBox, QDialog, QLineEdit, QFormLayout, QComboBox,
     QCheckBox, QMenu, QDialogButtonBox, QPushButton, QStatusBar,
-    QTableView
+    QTableView, QMainWindow
 )
 import os
 from PyQt6.QtGui import QFont, QColor, QAction
@@ -14,6 +14,7 @@ from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QDate, QAbstractTableModel, QMo
 from datetime import datetime
 from ui.user_search import UserSearchDialog
 from ui.custom_widgets import ModernGroupBox, ModernButton
+from ui.menu_auth import MenuAuthMixin
 from utils.helpers import get_status_arabic, get_status_color
 from money_transfer.receipt_printer import ReceiptPrinter
 from money_transfer.transaction_details import TransactionDetailsDialog
@@ -223,7 +224,7 @@ class SearchManager:
         self.search_transactions(transactions, '', ['sender'])
         self.search_transactions(transactions, '', ['receiver'])
 
-class MoneyTransferApp(QWidget, ReceiptPrinter, TransferCore):
+class MoneyTransferApp(QMainWindow, ReceiptPrinter, TransferCore, MenuAuthMixin):
     """Money Transfer Application for the Internal Payment System."""
     transferCompleted = pyqtSignal()
     logoutRequested = pyqtSignal()
@@ -245,6 +246,15 @@ class MoneyTransferApp(QWidget, ReceiptPrinter, TransferCore):
         
         self.setWindowTitle("نظام تحويل الأموال الداخلي")
         self.setGeometry(100, 100, 800, 700)
+        
+        # Create central widget and layout
+        self.central_widget = QWidget()
+        self.setCentralWidget(self.central_widget)
+        self.layout = QVBoxLayout(self.central_widget)
+        
+        # Only create menu bar for regular employees
+        if self.user_role == "employee":
+            self.create_menu_bar()
         
         self.setup_ui()
         
@@ -274,25 +284,12 @@ class MoneyTransferApp(QWidget, ReceiptPrinter, TransferCore):
         
     def setup_ui(self):
         """Set up the UI components."""
-        layout = QVBoxLayout()
-        
-        header_layout = QHBoxLayout()
-        
         # Title
         title = QLabel("نظام تحويل الأموال")
         title.setFont(QFont("Arial", 18, QFont.Weight.Bold))
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title.setStyleSheet("color: #2c3e50; margin-bottom: 10px;")
-        layout.addWidget(title)
-        
-        
-        # Menu button
-        menu_button = ModernButton("القائمة", color="#9b59b6")
-        menu_button.setFixedWidth(100)
-        menu_button.clicked.connect(self.show_menu)
-        header_layout.addWidget(menu_button, 0)  # No stretch
-        
-        layout.addLayout(header_layout)
+        self.layout.addWidget(title)
         
         # Create tabs
         self.tabs = QTabWidget()
@@ -320,67 +317,20 @@ class MoneyTransferApp(QWidget, ReceiptPrinter, TransferCore):
         self.new_transfer_tab = QWidget()
         self.transactions_tab = QWidget()
         self.notifications_tab = QWidget()
-        self.receive_money_tab = QWidget()  # New receive money tab
+        self.receive_money_tab = QWidget()
         
         # Set up tabs
         self.setup_new_transfer_tab()
         self.setup_transactions_tab()
         self.setup_notifications_tab()
-        self.setup_receive_money_tab()  # Setup new receive money tab        
+        self.setup_receive_money_tab()
         
         # Add tabs to widget
         self.tabs.addTab(self.new_transfer_tab, "تحويل جديد")
-        self.tabs.addTab(self.transactions_tab, "التحويلات الصادرة")  # Changed to Outgoing
-        self.tabs.addTab(self.receive_money_tab, "التحويلات الواردة")  # Changed to Incoming
+        self.tabs.addTab(self.transactions_tab, "التحويلات الصادرة")
+        self.tabs.addTab(self.receive_money_tab, "التحويلات الواردة")
             
-        layout.addWidget(self.tabs)
-        
-        self.setLayout(layout)
-        
-    def show_menu(self):
-        """Show the menu with logout and close options."""
-        menu = QMenu(self)
-        
-        # Add logout action
-        logout_action = QAction("تسجيل الخروج", self)
-        logout_action.triggered.connect(self.logout)
-        menu.addAction(logout_action)
-        
-        # Add separator
-        menu.addSeparator()
-        
-        # Add close action
-        close_action = QAction("إغلاق البرنامج", self)
-        close_action.triggered.connect(self.close)
-        menu.addAction(close_action)
-        
-        # Show menu at the position of the menu button
-        sender = self.sender()
-        if sender:
-            menu.exec(sender.mapToGlobal(sender.rect().bottomLeft()))
-    
-    def logout(self):
-        """Logout and return to login screen."""
-        reply = QMessageBox.question(
-            self, 
-            "تسجيل الخروج", 
-            "هل أنت متأكد من رغبتك في تسجيل الخروج؟",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, 
-            QMessageBox.StandardButton.No
-        )
-        
-        if reply == QMessageBox.StandardButton.Yes:
-            # Emit signal to notify parent about logout request
-            self.logoutRequested.emit()
-            self.close()    
-        
-    def on_filter_change(self, transfer_type):
-        if transfer_type == 'outgoing':
-            self.current_page_outgoing = 1
-            self.filter_transactions()
-        elif transfer_type == 'incoming':
-            self.current_page_incoming = 1
-            self.filter_received_transactions()        
+        self.layout.addWidget(self.tabs)
         
     def setup_receive_money_tab(self):
         """Set up the new receive money tab."""
