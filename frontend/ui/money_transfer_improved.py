@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (
     QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView,
     QMessageBox, QDialog, QLineEdit, QFormLayout, QComboBox,
     QCheckBox, QMenu, QDialogButtonBox, QPushButton, QStatusBar,
-    QTableView, QMainWindow
+    QTableView, QMainWindow, QDateEdit, QDoubleSpinBox, QTextEdit
 )
 import os
 from PyQt6.QtGui import QFont, QColor, QAction
@@ -240,6 +240,7 @@ class MoneyTransferApp(QMainWindow, ReceiptPrinter, TransferCore, MenuAuthMixin)
         self.api_url = os.environ["API_URL"]
         self.per_page_outgoing = 18
         self.per_page_incoming = 18
+        self.current_zoom = 100  # Track current zoom level
         
         # Initialize search manager
         self.search_manager = SearchManager()
@@ -1562,6 +1563,293 @@ class MoneyTransferApp(QMainWindow, ReceiptPrinter, TransferCore, MenuAuthMixin)
                 
         except Exception as e:
             print(f"Error refreshing branches: {str(e)}")
+
+    def show_search_dialog(self):
+        """Show search dialog for transactions."""
+        self.open_search_dialog()
+
+    def show_filter_dialog(self):
+        """Show filter dialog for transactions."""
+        # Create a dialog for advanced filtering
+        filter_dialog = QDialog(self)
+        filter_dialog.setWindowTitle("تصفية متقدمة")
+        filter_dialog.setMinimumWidth(400)
+        
+        layout = QVBoxLayout()
+        
+        # Date range filter
+        date_group = ModernGroupBox("نطاق التاريخ", "#3498db")
+        date_layout = QHBoxLayout()
+        
+        self.start_date_filter = QDateEdit()
+        self.start_date_filter.setCalendarPopup(True)
+        self.start_date_filter.setDate(QDate.currentDate().addDays(-30))
+        date_layout.addWidget(QLabel("من:"))
+        date_layout.addWidget(self.start_date_filter)
+        
+        self.end_date_filter = QDateEdit()
+        self.end_date_filter.setCalendarPopup(True)
+        self.end_date_filter.setDate(QDate.currentDate())
+        date_layout.addWidget(QLabel("إلى:"))
+        date_layout.addWidget(self.end_date_filter)
+        
+        date_group.setLayout(date_layout)
+        layout.addWidget(date_group)
+        
+        # Amount range filter
+        amount_group = ModernGroupBox("نطاق المبلغ", "#2ecc71")
+        amount_layout = QHBoxLayout()
+        
+        self.min_amount_filter = QDoubleSpinBox()
+        self.min_amount_filter.setRange(0, 1000000)
+        self.min_amount_filter.setPrefix("$ ")
+        amount_layout.addWidget(QLabel("من:"))
+        amount_layout.addWidget(self.min_amount_filter)
+        
+        self.max_amount_filter = QDoubleSpinBox()
+        self.max_amount_filter.setRange(0, 1000000)
+        self.max_amount_filter.setPrefix("$ ")
+        amount_layout.addWidget(QLabel("إلى:"))
+        amount_layout.addWidget(self.max_amount_filter)
+        
+        amount_group.setLayout(amount_layout)
+        layout.addWidget(amount_group)
+        
+        # Buttons
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        button_box.accepted.connect(lambda: self.apply_filters(filter_dialog))
+        button_box.rejected.connect(filter_dialog.reject)
+        layout.addWidget(button_box)
+        
+        filter_dialog.setLayout(layout)
+        filter_dialog.exec()
+
+    def apply_filters(self, dialog):
+        """Apply the selected filters."""
+        filters = {
+            'start_date': self.start_date_filter.date().toString("yyyy-MM-dd"),
+            'end_date': self.end_date_filter.date().toString("yyyy-MM-dd"),
+            'min_amount': self.min_amount_filter.value(),
+            'max_amount': self.max_amount_filter.value()
+        }
+        
+        # Apply filters using search manager
+        filtered_transactions = self.search_manager.filter_transactions(self.all_transactions, filters)
+        
+        # Update the model with filtered data
+        self.transaction_model.update_data(filtered_transactions)
+        
+        dialog.accept()
+
+    def zoom_in(self):
+        """Zoom in the view."""
+        self.current_zoom = min(200, self.current_zoom + 10)
+        self.apply_zoom()
+
+    def zoom_out(self):
+        """Zoom out the view."""
+        self.current_zoom = max(50, self.current_zoom - 10)
+        self.apply_zoom()
+
+    def apply_zoom(self):
+        """Apply the current zoom level to the UI."""
+        zoom_factor = self.current_zoom / 100
+        self.setStyleSheet(f"""
+            QWidget {{
+                font-size: {zoom_factor}em;
+            }}
+            QTableWidget {{
+                font-size: {zoom_factor}em;
+            }}
+            QLabel {{
+                font-size: {zoom_factor}em;
+            }}
+            QPushButton {{
+                font-size: {zoom_factor}em;
+            }}
+        """)
+
+    def toggle_theme(self):
+        """Toggle between light and dark theme."""
+        if not hasattr(self, 'is_dark_theme'):
+            self.is_dark_theme = False
+        
+        self.is_dark_theme = not self.is_dark_theme
+        
+        if self.is_dark_theme:
+            self.setStyleSheet("""
+                QWidget {
+                    background-color: #2c3e50;
+                    color: #ecf0f1;
+                }
+                QTableWidget {
+                    background-color: #34495e;
+                    color: #ecf0f1;
+                    gridline-color: #2c3e50;
+                }
+                QHeaderView::section {
+                    background-color: #1a2530;
+                    color: #ecf0f1;
+                }
+                QPushButton {
+                    background-color: #3498db;
+                    color: white;
+                }
+                QPushButton:hover {
+                    background-color: #2980b9;
+                }
+            """)
+        else:
+            self.setStyleSheet("""
+                QWidget {
+                    background-color: white;
+                    color: #2c3e50;
+                }
+                QTableWidget {
+                    background-color: white;
+                    color: #2c3e50;
+                    gridline-color: #ddd;
+                }
+                QHeaderView::section {
+                    background-color: #2c3e50;
+                    color: white;
+                }
+                QPushButton {
+                    background-color: #3498db;
+                    color: white;
+                }
+                QPushButton:hover {
+                    background-color: #2980b9;
+                }
+            """)
+
+    def show_profile(self):
+        """Show user profile dialog."""
+        profile_dialog = QDialog(self)
+        profile_dialog.setWindowTitle("الملف الشخصي")
+        profile_dialog.setMinimumWidth(400)
+        
+        layout = QVBoxLayout()
+        
+        # User info group
+        info_group = ModernGroupBox("معلومات المستخدم", "#3498db")
+        info_layout = QFormLayout()
+        
+        info_layout.addRow("اسم المستخدم:", QLabel(self.username))
+        info_layout.addRow("الاسم الكامل:", QLabel(self.full_name))
+        info_layout.addRow("الدور:", QLabel(self.user_role))
+        info_layout.addRow("الفرع:", QLabel(self.current_branch_label.text()))
+        
+        info_group.setLayout(info_layout)
+        layout.addWidget(info_group)
+        
+        # Buttons
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Close
+        )
+        button_box.rejected.connect(profile_dialog.reject)
+        layout.addWidget(button_box)
+        
+        profile_dialog.setLayout(layout)
+        profile_dialog.exec()
+
+    def change_password(self):
+        """Show change password dialog."""
+        from ui.change_password import ChangePasswordDialog
+        dialog = ChangePasswordDialog(self)
+        dialog.exec()
+
+    def show_about(self):
+        """Show about dialog."""
+        about_dialog = QDialog(self)
+        about_dialog.setWindowTitle("حول البرنامج")
+        about_dialog.setMinimumWidth(400)
+        
+        layout = QVBoxLayout()
+        
+        # Logo and title
+        title = QLabel("نظام تحويل الأموال الداخلي")
+        title.setFont(QFont("Arial", 16, QFont.Weight.Bold))
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title)
+        
+        # Version info
+        version = QLabel("الإصدار 1.0")
+        version.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(version)
+        
+        # Copyright
+        copyright = QLabel("© 2024 جميع الحقوق محفوظة")
+        copyright.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(copyright)
+        
+        # Close button
+        close_button = QPushButton("إغلاق")
+        close_button.clicked.connect(about_dialog.accept)
+        layout.addWidget(close_button)
+        
+        about_dialog.setLayout(layout)
+        about_dialog.exec()
+
+    def show_help(self):
+        """Show help documentation."""
+        help_dialog = QDialog(self)
+        help_dialog.setWindowTitle("دليل المستخدم")
+        help_dialog.setMinimumWidth(600)
+        help_dialog.setMinimumHeight(400)
+        
+        layout = QVBoxLayout()
+        
+        # Help content
+        help_text = QTextEdit()
+        help_text.setReadOnly(True)
+        help_text.setHtml("""
+            <h2>دليل استخدام نظام تحويل الأموال</h2>
+            <h3>التحويلات الجديدة</h3>
+            <p>لإنشاء تحويل جديد:</p>
+            <ol>
+                <li>أدخل معلومات المرسل</li>
+                <li>أدخل معلومات المستلم</li>
+                <li>أدخل مبلغ التحويل</li>
+                <li>انقر على زر "إرسال التحويل"</li>
+            </ol>
+            
+            <h3>التحويلات الصادرة</h3>
+            <p>لعرض وتتبع التحويلات الصادرة:</p>
+            <ul>
+                <li>استخدم خيارات التصفية للبحث عن تحويلات محددة</li>
+                <li>انقر نقراً مزدوجاً على أي تحويل لعرض تفاصيله</li>
+                <li>استخدم خيارات الطباعة لطباعة تفاصيل التحويل</li>
+            </ul>
+            
+            <h3>التحويلات الواردة</h3>
+            <p>لإدارة التحويلات الواردة:</p>
+            <ul>
+                <li>استخدم خيارات التصفية للبحث عن تحويلات محددة</li>
+                <li>انقر على زر "تأكيد الاستلام" لتأكيد استلام التحويل</li>
+                <li>استخدم خيارات الطباعة لطباعة إيصال الاستلام</li>
+            </ul>
+            
+            <h3>اختصارات لوحة المفاتيح</h3>
+            <ul>
+                <li>Ctrl+N: تحويل جديد</li>
+                <li>Ctrl+F: بحث</li>
+                <li>Ctrl+P: طباعة</li>
+                <li>Ctrl+R: تحديث</li>
+                <li>F1: عرض المساعدة</li>
+            </ul>
+        """)
+        layout.addWidget(help_text)
+        
+        # Close button
+        close_button = QPushButton("إغلاق")
+        close_button.clicked.connect(help_dialog.accept)
+        layout.addWidget(close_button)
+        
+        help_dialog.setLayout(layout)
+        help_dialog.exec()
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
