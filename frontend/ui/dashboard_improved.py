@@ -5,8 +5,8 @@ from PyQt6.QtWidgets import (
     QDialog, QLineEdit, QFormLayout, QComboBox, QGroupBox, QGridLayout, 
     QStatusBar, QDateEdit, QDoubleSpinBox, QDialogButtonBox, QPushButton, QTextEdit
 )
-from PyQt6.QtGui import QFont, QColor
-from PyQt6.QtCore import Qt, QTimer, QDate, QThread, pyqtSignal
+from PyQt6.QtGui import QFont, QColor, QIcon
+from PyQt6.QtCore import Qt, QTimer, QDate, QThread, pyqtSignal, QSize
 from ui.money_transfer_improved import MoneyTransferApp
 from dashboard.branch_management import BranchManagementMixin
 from ui.user_search import UserSearchDialog
@@ -123,94 +123,23 @@ class ChartManager:
         
     def queue_update(self, chart_type, data):
         """Queue a chart update to be processed efficiently"""
-        self._update_queue.append((chart_type, data))
-        if not self._is_updating:
-            self._process_next_update()
+        # No-op: charts are disabled
+        pass
     
     def _process_next_update(self):
         """Process the next chart update in the queue"""
-        if not self._update_queue:
-            self._is_updating = False
-            return
-            
-        self._is_updating = True
-        chart_type, data = self._update_queue.pop(0)
-        
-        try:
-            if chart_type == "transfers":
-                self._update_transfers_chart(data)
-            elif chart_type == "amounts":
-                self._update_amounts_chart(data)
-        finally:
-            # Schedule next update
-            QTimer.singleShot(50, self._process_next_update)
+        # No-op: charts are disabled
+        pass
     
     def _update_transfers_chart(self, data):
         """Update transfers chart efficiently"""
-        try:
-            if not data:
-                self.dashboard.transfers_bars.setText("لا توجد بيانات متاحة")
-                return
-            # Create HTML-based bar chart
-            html = ['<div style="font-family: Arial; padding: 10px;">']
-            max_value = max(count for _, count in data)
-            
-            for branch, count in data:
-                percentage = (count / max_value) * 100 if max_value > 0 else 0
-                html.append(f'''
-                    <div style="margin: 5px 0;">
-                        <div style="display: flex; align-items: center;">
-                            <div style="width: 150px; text-align: left;">{branch}</div>
-                            <div style="flex-grow: 1;">
-                                <div style="background: #3498db; width: {percentage}%; height: 20px; 
-                                          border-radius: 3px; position: relative;">
-                                    <span style="position: absolute; right: 5px; color: white; 
-                                               line-height: 20px;">{count}</span>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                ''')
-            
-            html.append('</div>')
-            self.dashboard.transfers_bars.setText(''.join(html))
-            
-        except Exception as e:
-            print(f"Error updating transfers chart: {e}")
+        # No-op: charts are disabled
+        pass
     
     def _update_amounts_chart(self, data):
         """Update amounts chart efficiently"""
-        try:
-            if not data:
-                self.dashboard.amounts_bars.setText("لا توجد بيانات متاحة")
-                return
-            # Create HTML-based bar chart for amounts
-            html = ['<div style="font-family: Arial; padding: 10px;">']
-            max_value = max(amount for _, amount in data)
-            
-            for branch, amount in data:
-                percentage = (amount / max_value) * 100 if max_value > 0 else 0
-                formatted_amount = f"{amount:,.2f}"
-                html.append(f'''
-                    <div style="margin: 5px 0;">
-                        <div style="display: flex; align-items: center;">
-                            <div style="width: 150px; text-align: left;">{branch}</div>
-                            <div style="flex-grow: 1;">
-                                <div style="background: #2ecc71; width: {percentage}%; height: 20px; 
-                                          border-radius: 3px; position: relative;">
-                                    <span style="position: absolute; right: 5px; color: white; 
-                                               line-height: 20px;">{formatted_amount}</span>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                ''')
-            
-            html.append('</div>')
-            self.dashboard.amounts_bars.setText(''.join(html))
-            
-        except Exception as e:
-            print(f"Error updating amounts chart: {e}")
+        # No-op: charts are disabled
+        pass
 
 class BranchStatsLoader(QThread):
     """Asynchronous loader for branch statistics"""
@@ -241,7 +170,7 @@ class BranchStatsLoader(QThread):
 class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, ReceiptPrinterMixin, ReportHandlerMixin, SettingsHandlerMixin, EmployeeManagementMixin, BranchManagementMixin):
     """Dashboard for the director role."""
     
-    def __init__(self, token=None):
+    def __init__(self, token=None, full_name="مدير النظام"):
         super().__init__()
         BranchManagementMixin.__init__(self)
         self.token = token
@@ -254,6 +183,13 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
         self.total_pages_transactions = 1
         self.api_client = APIClient(token)
         self.current_zoom = 100  # Track current zoom level
+        self.full_name = full_name
+        # --- Add missing QLabel attributes for stats ---
+        from PyQt6.QtWidgets import QLabel
+        self.employees_count = QLabel("0")
+        self.transactions_count = QLabel("0")
+        self.amount_total = QLabel("0")
+        self.branches_count = QLabel("0")
         
         # Add timer for auto-refreshing transactions
         self.transaction_timer = QTimer(self)
@@ -409,216 +345,350 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
         self.admin_transfer_tab.setLayout(layout)    
     
     def setup_dashboard_tab(self):
-        """Set up the dashboard tab with statistics and charts."""
+        """Set up the dashboard tab with a modern and minimalist design."""
         layout = QVBoxLayout()
         
-        # Title
-        title = QLabel("لوحة المعلومات")
-        title.setFont(QFont("Arial", 18, QFont.Weight.Bold))
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title.setStyleSheet("color: #2c3e50; margin-bottom: 20px;")
-        layout.addWidget(title)
+        # Welcome Section with Time
+        welcome_layout = QHBoxLayout()
         
-        # Statistics cards
-        stats_layout = QHBoxLayout()
+        # Welcome message with current time
+        welcome_group = ModernGroupBox("", "#ffffff")
+        welcome_group.setStyleSheet("""
+            ModernGroupBox {
+                background-color: #ffffff;
+                border: none;
+                border-radius: 15px;
+                padding: 20px;
+            }
+        """)
+        welcome_layout_inner = QVBoxLayout()
         
-        # Branches card
-        self.branches_card = ModernGroupBox("الفروع", "#3498db")
-        branches_layout = QVBoxLayout()
-        self.branches_count = QLabel("0")
-        self.branches_count.setFont(QFont("Arial", 24, QFont.Weight.Bold))
-        self.branches_count.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.branches_count.setStyleSheet("color: #3498db;")
-        branches_layout.addWidget(self.branches_count)
-        branches_label = QLabel("إجمالي الفروع")
-        branches_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        branches_layout.addWidget(branches_label)
-        self.branches_card.setLayout(branches_layout)
-        stats_layout.addWidget(self.branches_card)
+        time_label = QLabel()
+        time_label.setStyleSheet("color: #95a5a6; font-size: 14px;")
         
-        # Employees card
-        self.employees_card = ModernGroupBox("الموظفين", "#2ecc71")
-        employees_layout = QVBoxLayout()
-        self.employees_count = QLabel("0")
-        self.employees_count.setFont(QFont("Arial", 24, QFont.Weight.Bold))
-        self.employees_count.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.employees_count.setStyleSheet("color: #2ecc71;")
-        employees_layout.addWidget(self.employees_count)
-        employees_label = QLabel("إجمالي الموظفين")
-        employees_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        employees_layout.addWidget(employees_label)
-        self.employees_card.setLayout(employees_layout)
-        stats_layout.addWidget(self.employees_card)
+        # Update time every minute
+        def update_time():
+            current_time = datetime.now().strftime("%I:%M %p")
+            current_date = datetime.now().strftime("%Y/%m/%d")
+            time_label.setText(f"{current_time} - {current_date}")
+            
+        update_time()
+        self.time_timer = QTimer()
+        self.time_timer.timeout.connect(update_time)
+        self.time_timer.start(60000)  # Update every minute
         
-        # Transactions card
-        self.transactions_card = ModernGroupBox("التحويلات", "#e74c3c")
-        transactions_layout = QVBoxLayout()
-        self.transactions_count = QLabel("0")
-        self.transactions_count.setFont(QFont("Arial", 24, QFont.Weight.Bold))
-        self.transactions_count.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.transactions_count.setStyleSheet("color: #e74c3c;")
-        transactions_layout.addWidget(self.transactions_count)
-        transactions_label = QLabel("إجمالي التحويلات")
-        transactions_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        transactions_layout.addWidget(transactions_label)
-        self.transactions_card.setLayout(transactions_layout)
-        stats_layout.addWidget(self.transactions_card)
+        welcome_text = QLabel(f"مرحباً، {self.full_name}")
+        welcome_text.setStyleSheet("font-size: 24px; font-weight: bold; color: #2c3e50; margin-bottom: 5px;")
         
-        # Amount card
-        self.amount_card = ModernGroupBox("المبالغ", "#f39c12")
-        amount_layout = QVBoxLayout()
-        self.amount_total = QLabel("0")
-        self.amount_total.setFont(QFont("Arial", 24, QFont.Weight.Bold))
-        self.amount_total.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.amount_total.setStyleSheet("color: #f39c12;")
-        amount_layout.addWidget(self.amount_total)
-        amount_label = QLabel("إجمالي المبالغ")
-        amount_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        amount_layout.addWidget(amount_label)
-        self.amount_card.setLayout(amount_layout)
-        stats_layout.addWidget(self.amount_card)
+        welcome_layout_inner.addWidget(welcome_text)
+        welcome_layout_inner.addWidget(time_label)
+        welcome_group.setLayout(welcome_layout_inner)
+        welcome_layout.addWidget(welcome_group, stretch=2)
         
-        layout.addLayout(stats_layout)
-        
-        # Charts section - replaced with placeholder since matplotlib is not available
-        charts_layout = QHBoxLayout()
-        
-        # Statistics by Branch
-        stats_group = ModernGroupBox("إحصائيات الفروع", "#3498db")
-        stats_layout = QHBoxLayout()
-        
-        # Transfers by Branch
-        transfers_group = QGroupBox("التحويلات حسب الفرع")
-        transfers_layout = QVBoxLayout()
-        
-        self.transfers_bars = QLabel()
-        self.transfers_bars.setTextFormat(Qt.TextFormat.RichText)
-        self.transfers_bars.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.transfers_bars.setStyleSheet("font-family: Arial; color: #333;")
-        transfers_layout.addWidget(self.transfers_bars)
-        
-        transfers_group.setLayout(transfers_layout)
-        stats_layout.addWidget(transfers_group)
-        
-        # Amounts by Branch
-        amounts_group = QGroupBox("المبالغ حسب الفرع")
-        amounts_layout = QVBoxLayout()
-        
-        self.amounts_bars = QLabel()
-        self.amounts_bars.setTextFormat(Qt.TextFormat.RichText)
-        self.amounts_bars.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.amounts_bars.setStyleSheet("font-family: Arial; color: #333;")
-        amounts_layout.addWidget(self.amounts_bars)
-        
-        amounts_group.setLayout(amounts_layout)
-        stats_layout.addWidget(amounts_group)
+        # Quick Actions (improved)
+        actions_group = ModernGroupBox("", "#ffffff")
+        actions_group.setStyleSheet("""
+            ModernGroupBox {
+                background-color: #ffffff;
+                border: none;
+                border-radius: 15px;
+                padding: 10px;
+            }
+        """)
+        actions_layout = QHBoxLayout()
+        actions_layout.setSpacing(30)
+        actions_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        stats_group.setLayout(stats_layout)
-        layout.addWidget(stats_group)
+        # Helper to create a button with icon and label
+        def create_action_button(icon_path, color, text, callback):
+            from PyQt6.QtWidgets import QVBoxLayout, QLabel
+            btn_layout = QVBoxLayout()
+            btn_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            btn = ModernButton("", color=color)
+            btn.setIcon(QIcon(icon_path))
+            btn.setIconSize(QSize(32, 32))
+            btn.setFixedSize(56, 56)
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    border-radius: 28px;
+                    background-color: {color};
+                    color: white;
+                    font-size: 18px;
+                    border: none;
+                }}
+                QPushButton:hover {{
+                    background-color: #222222;
+                    color: #fff;
+                }}
+            """)
+            btn.clicked.connect(callback)
+            label = QLabel(text)
+            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            label.setStyleSheet("font-size: 13px; color: #2c3e50; margin-top: 6px;")
+            btn_layout.addWidget(btn)
+            btn_layout.addWidget(label)
+            return btn_layout
+
+        # Add Employee Button
+        add_emp_layout = create_action_button(
+            "assets/icons/add_user.png", "#27ae60", "إضافة موظف", self.add_employee
+        )
+        # New Transfer Button
+        new_transfer_layout = create_action_button(
+            "assets/icons/transfer.png", "#3498db", "تحويل جديد", self.new_transfer
+        )
+        # Reports Button
+        reports_layout = create_action_button(
+            "assets/icons/report.png", "#e74c3c", "التقارير", self.show_reports
+        )
+
+        actions_layout.addLayout(add_emp_layout)
+        actions_layout.addLayout(new_transfer_layout)
+        actions_layout.addLayout(reports_layout)
+        actions_group.setLayout(actions_layout)
+        welcome_layout.addWidget(actions_group, stretch=1)
+        layout.addLayout(welcome_layout)
         
-        layout.addLayout(charts_layout)
+        # Main Content Area
+        content_layout = QHBoxLayout()
         
-        # Recent transactions
-        recent_group = ModernGroupBox("أحدث التحويلات", "#3498db")
-        recent_layout = QVBoxLayout()
+        # Left Column - Statistics Cards
+        left_column = QVBoxLayout()
         
-        self.recent_transactions_table = QTableWidget()
-        self.recent_transactions_table.setColumnCount(11)  # Increased to 11 columns
-        self.recent_transactions_table.setHorizontalHeaderLabels([
-            "النوع", "رقم التحويل", 
-            "المرسل",  "المستلم", "المبلغ", "التاريخ", "الحالة", "الفرع الصادر",
-            "اتجاه الصادر","الفرع الوارد", "اتجاه الوارد", "اسم الموظف"
-        ])
-        self.recent_transactions_table.horizontalHeader().setStretchLastSection(True)
-        self.recent_transactions_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.recent_transactions_table.setStyleSheet("""
+        # Financial Status Card
+        financial_card = ModernGroupBox("الحالة المالية", "#ffffff")
+        financial_card.setStyleSheet("""
+            ModernGroupBox {
+                background-color: #ffffff;
+                border: none;
+                border-radius: 15px;
+                padding: 20px;
+            }
+            QLabel {
+                color: #2c3e50;
+            }
+        """)
+        financial_layout = QVBoxLayout()
+        
+        # SYP Balance
+        syp_layout = QHBoxLayout()
+        syp_icon = QLabel("💵")
+        syp_icon.setStyleSheet("font-size: 24px;")
+        self.syp_balance = QLabel("0 ل.س")
+        self.syp_balance.setStyleSheet("font-size: 18px; font-weight: bold; color: #27ae60;")
+        syp_layout.addWidget(syp_icon)
+        syp_layout.addWidget(self.syp_balance, alignment=Qt.AlignmentFlag.AlignRight)
+        financial_layout.addLayout(syp_layout)
+        
+        # USD Balance
+        usd_layout = QHBoxLayout()
+        usd_icon = QLabel("💰")
+        usd_icon.setStyleSheet("font-size: 24px;")
+        self.usd_balance = QLabel("0 $")
+        self.usd_balance.setStyleSheet("font-size: 18px; font-weight: bold; color: #2980b9;")
+        usd_layout.addWidget(usd_icon)
+        usd_layout.addWidget(self.usd_balance, alignment=Qt.AlignmentFlag.AlignRight)
+        financial_layout.addLayout(usd_layout)
+        
+        financial_card.setLayout(financial_layout)
+        left_column.addWidget(financial_card)
+        
+        # Branch Status Card
+        branch_card = ModernGroupBox("حالة الفرع", "#ffffff")
+        branch_card.setStyleSheet("""
+            ModernGroupBox {
+                background-color: #ffffff;
+                border: none;
+                border-radius: 15px;
+                padding: 20px;
+            }
+        """)
+        branch_layout = QVBoxLayout()
+        
+        # Active Employees
+        emp_layout = QHBoxLayout()
+        emp_icon = QLabel("👥")
+        emp_icon.setStyleSheet("font-size: 24px;")
+        self.active_employees = QLabel("0 موظف نشط")
+        self.active_employees.setStyleSheet("font-size: 16px; color: #2c3e50;")
+        emp_layout.addWidget(emp_icon)
+        emp_layout.addWidget(self.active_employees, alignment=Qt.AlignmentFlag.AlignRight)
+        branch_layout.addLayout(emp_layout)
+        
+        # Today's Transactions
+        trans_layout = QHBoxLayout()
+        trans_icon = QLabel("📊")
+        trans_icon.setStyleSheet("font-size: 24px;")
+        self.today_transactions = QLabel("0 تحويل اليوم")
+        self.today_transactions.setStyleSheet("font-size: 16px; color: #2c3e50;")
+        trans_layout.addWidget(trans_icon)
+        trans_layout.addWidget(self.today_transactions, alignment=Qt.AlignmentFlag.AlignRight)
+        branch_layout.addLayout(trans_layout)
+        
+        branch_card.setLayout(branch_layout)
+        left_column.addWidget(branch_card)
+        
+        content_layout.addLayout(left_column)
+        
+        # Right Column - Recent Activity
+        activity_card = ModernGroupBox("النشاط الحديث", "#ffffff")
+        activity_card.setStyleSheet("""
+            ModernGroupBox {
+                background-color: #ffffff;
+                border: none;
+                border-radius: 15px;
+                padding: 20px;
+            }
+        """)
+        activity_layout = QVBoxLayout()
+        
+        self.activity_list = QTableWidget()
+        self.activity_list.setColumnCount(4)
+        self.activity_list.setHorizontalHeaderLabels(["الوقت", "النوع", "التفاصيل", "الحالة"])
+        self.activity_list.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.activity_list.setStyleSheet("""
             QTableWidget {
                 border: none;
-                background-color: white;
-                gridline-color: #ddd;
+                background-color: transparent;
             }
             QHeaderView::section {
-                background-color: #2c3e50;
-                color: white;
-                padding: 8px;
-                border: 1px solid #1a2530;
+                background-color: transparent;
+                color: #7f8c8d;
+                border: none;
+                padding: 5px;
                 font-weight: bold;
             }
             QTableWidget::item {
-                padding: 5px;
-            }
-            QTableWidget::item:selected {
-                background-color: #3498db;
-                color: white;
-            }
-            QTableWidget::item[type="outgoing"] {
-                background-color: #e8f5e9;
-            }
-            QTableWidget::item[type="incoming"] {
-                background-color: #ffebee;
+                padding: 10px;
+                border-bottom: 1px solid #ecf0f1;
             }
         """)
+        self.activity_list.setShowGrid(False)
+        self.activity_list.verticalHeader().setVisible(False)
         
-        # Pagination controls
-        pagination_layout = QHBoxLayout()
-        self.prev_button = ModernButton("السابق", color="#3498db")
-        self.prev_button.clicked.connect(self.prev_page)
-        pagination_layout.addWidget(self.prev_button)
+        activity_layout.addWidget(self.activity_list)
+        activity_card.setLayout(activity_layout)
+        content_layout.addWidget(activity_card, stretch=2)
         
-        self.page_label = QLabel("الصفحة: 1")
-        pagination_layout.addWidget(self.page_label)
+        layout.addLayout(content_layout)
         
-        self.next_button = ModernButton("التالي", color="#3498db")
-        self.next_button.clicked.connect(self.next_page)
-        pagination_layout.addWidget(self.next_button)
-        
-        recent_layout.addWidget(self.recent_transactions_table)
-        recent_layout.addLayout(pagination_layout)
-        
-        # View all button
-        view_all_button = ModernButton("عرض جميع التحويلات", color="#3498db")
-        view_all_button.clicked.connect(lambda: self.tabs.setCurrentIndex(3))  # Switch to transactions tab
-        recent_layout.addWidget(view_all_button)
-        
-        recent_group.setLayout(recent_layout)
-        layout.addWidget(recent_group)
-        
-        # Load branch statistics
-        self.load_branch_stats()
+        # Set up refresh timer
+        self.refresh_timer = QTimer()
+        self.refresh_timer.timeout.connect(self.refresh_dashboard)
+        self.refresh_timer.start(30000)  # Refresh every 30 seconds
         
         self.dashboard_tab.setLayout(layout)
-        self.load_recent_transactions()
+        self.refresh_dashboard()
         
-    def create_transaction_type_item(self, transaction):
-        """Enhanced direction indicators"""
-        transfer_type = ""
-        color = QColor()
-        
-        has_outgoing = transaction.get("branch_id") is not None
-        has_incoming = transaction.get("destination_branch_id") is not None
-        
-        if has_outgoing and has_incoming:
-            if transaction["branch_id"] == transaction["destination_branch_id"]:
-                transfer_type = "↔ داخلي"
-                color = QColor(150, 150, 0)  # Yellow
-            else:
-                transfer_type = "↔ بين فروع"
-                color = QColor(0, 0, 150)  # Blue
-        elif has_outgoing:
-            transfer_type = "↑ صادر"
-            color = QColor(0, 150, 0)  # Green
-        elif has_incoming:
-            transfer_type = "↓ وارد"
-            color = QColor(150, 0, 0)  # Red
-        else:
-            transfer_type = "↔ نظامي"
-            color = QColor(100, 100, 100)  # Gray
-        
-        item = QTableWidgetItem(transfer_type)
-        item.setForeground(color)
-        item.setFont(QFont("Arial", 12, QFont.Weight.Bold))
-        return item
-    
+    def refresh_dashboard(self):
+        """Refresh all dashboard data."""
+        try:
+            # Update financial status
+            self.load_financial_status()
+            
+            # Update branch status
+            self.load_branch_status()
+            
+            # Update recent activity
+            self.load_recent_activity()
+            
+        except Exception as e:
+            print(f"Error refreshing dashboard: {e}")
+            
+    def load_financial_status(self):
+        """Load and display financial status."""
+        try:
+            headers = {"Authorization": f"Bearer {self.token}"}
+            # For director, get total financial stats across all branches
+            response = requests.get(f"{self.api_url}/financial/total/", headers=headers)
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                # Update SYP balance
+                syp_balance = data.get("total_balance_syp", 0)
+                self.syp_balance.setText(f"{syp_balance:,.0f} ل.س")
+                
+                # Update USD balance
+                usd_balance = data.get("total_balance_usd", 0)
+                self.usd_balance.setText(f"{usd_balance:,.2f} $")
+                
+        except Exception as e:
+            print(f"Error loading financial status: {e}")
+            self.syp_balance.setText("غير متوفر")
+            self.usd_balance.setText("غير متوفر")
+            
+    def load_branch_status(self):
+        """Load and display overall system status."""
+        try:
+            headers = {"Authorization": f"Bearer {self.token}"}
+            
+            # Get total active employees across all branches
+            emp_response = requests.get(
+                f"{self.api_url}/users/stats/",
+                headers=headers
+            )
+            if emp_response.status_code == 200:
+                emp_data = emp_response.json()
+                active_count = emp_data.get("active", 0)
+                self.active_employees.setText(f"{active_count} موظف نشط")
+            
+            # Get today's total transactions
+            today = datetime.now().strftime("%Y-%m-%d")
+            trans_response = requests.get(
+                f"{self.api_url}/transactions/stats/?date={today}",
+                headers=headers
+            )
+            if trans_response.status_code == 200:
+                trans_data = trans_response.json()
+                trans_count = trans_data.get("total", 0)
+                self.today_transactions.setText(f"{trans_count} تحويل اليوم")
+                
+        except Exception as e:
+            print(f"Error loading branch status: {e}")
+            self.active_employees.setText("غير متوفر")
+            self.today_transactions.setText("غير متوفر")
+            
+    def load_recent_activity(self):
+        """Load and display recent system-wide activity."""
+        try:
+            headers = {"Authorization": f"Bearer {self.token}"}
+            response = requests.get(
+                f"{self.api_url}/activity/",  # System-wide activity endpoint
+                headers=headers
+            )
+            
+            if response.status_code == 200:
+                activities = response.json().get("activities", [])
+                self.activity_list.setRowCount(len(activities))
+                
+                for i, activity in enumerate(activities):
+                    # Time
+                    time_item = QTableWidgetItem(activity.get("time"))
+                    time_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                    self.activity_list.setItem(i, 0, time_item)
+                    
+                    # Type
+                    type_item = QTableWidgetItem(activity.get("type"))
+                    type_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                    self.activity_list.setItem(i, 1, type_item)
+                    
+                    # Details
+                    details_item = QTableWidgetItem(activity.get("details"))
+                    self.activity_list.setItem(i, 2, details_item)
+                    
+                    # Status
+                    status = activity.get("status", "")
+                    status_item = QTableWidgetItem(get_status_arabic(status))
+                    status_item.setBackground(get_status_color(status))
+                    status_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                    self.activity_list.setItem(i, 3, status_item)
+                    
+        except Exception as e:
+            print(f"Error loading recent activity: {e}")
+            # Clear the table in case of error
+            self.activity_list.setRowCount(0)
+
     def setup_employees_tab(self):
         """Set up the employees tab with proper filtering controls."""
         layout = QVBoxLayout()
@@ -1503,13 +1573,17 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
             self.statusBar().showMessage(f"خطأ في تحديث إحصائيات الفروع: {str(e)}", 5000)
 
     def closeEvent(self, event):
-        if hasattr(self, 'load_thread') and self.load_thread.isRunning():
-            self.load_thread.quit()
-            self.load_thread.wait()
-        if hasattr(self, 'stats_loader') and self.stats_loader.isRunning():
-            self.stats_loader.quit()
-            self.stats_loader.wait()
-        super().closeEvent(event)
+        """Clean up timers and resources when closing."""
+        # Stop all timers
+        if hasattr(self, 'refresh_timer'):
+            self.refresh_timer.stop()
+        if hasattr(self, 'transaction_timer'):
+            self.transaction_timer.stop()
+        if hasattr(self, 'time_timer'):
+            self.time_timer.stop()
+        
+        # Accept the close event
+        event.accept()
 
     def show_search_dialog(self):
         """Show search dialog for transactions."""
@@ -1790,3 +1864,41 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
         
         help_dialog.setLayout(layout)
         help_dialog.exec()
+
+    def new_transfer(self):
+        """Switch to admin transfer tab for a new transfer."""
+        self.tabs.setCurrentIndex(4)  # Switch to admin transfer tab
+
+    def add_employee(self):
+        """Open dialog to add a new employee."""
+        from ui.user_management_improved import AddEmployeeDialog
+        dialog = AddEmployeeDialog(
+            is_admin=True,  # Director has admin privileges
+            token=self.token,
+            current_user_id=None  # Director can add employees to any branch
+        )
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.refresh_dashboard()
+
+    def show_reports(self):
+        """Switch to reports tab."""
+        self.tabs.setCurrentIndex(5)  # Switch to reports tab
+
+    def create_transaction_type_item(self, transaction):
+        """Return a colored QTableWidgetItem for the transaction type."""
+        from PyQt6.QtWidgets import QTableWidgetItem
+        from PyQt6.QtGui import QColor
+        ttype = transaction.get("type", "")
+        if ttype == "incoming" or (transaction.get("destination_branch_id") and not transaction.get("branch_id")):
+            item = QTableWidgetItem("وارد")
+            item.setForeground(QColor(39, 174, 96))  # أخضر
+        elif ttype == "outgoing" or (transaction.get("branch_id") and not transaction.get("destination_branch_id")):
+            item = QTableWidgetItem("صادر")
+            item.setForeground(QColor(52, 152, 219))  # أزرق
+        elif transaction.get("branch_id") and transaction.get("destination_branch_id"):
+            item = QTableWidgetItem("داخلي")
+            item.setForeground(QColor(243, 156, 18))  # برتقالي
+        else:
+            item = QTableWidgetItem("غير معروف")
+            item.setForeground(QColor(127, 140, 141))  # رمادي
+        return item

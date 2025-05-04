@@ -1,5 +1,5 @@
 from fastapi import FastAPI, HTTPException, Depends, status
-from sqlalchemy import create_engine, func, and_, or_
+from sqlalchemy import create_engine, func, and_, or_, desc
 from sqlalchemy.orm import sessionmaker, Session, joinedload, aliased
 from models import User, Branch, Base, BranchFund, Notification, Transaction
 from pydantic import BaseModel, validator, ValidationError
@@ -2359,4 +2359,31 @@ async def restore_backup(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Restore failed: {str(e)}")
     return {"status": "success", "message": "تمت الاستعادة بنجاح"}
+
+@app.get("/financial/total/")
+def get_total_financial_stats(db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
+    if current_user["role"] != "director":
+        raise HTTPException(status_code=403, detail="Director access required")
+    total_syp = db.query(func.coalesce(func.sum(Branch.allocated_amount_syp), 0.0)).scalar()
+    total_usd = db.query(func.coalesce(func.sum(Branch.allocated_amount_usd), 0.0)).scalar()
+    return {
+        "total_balance_syp": total_syp,
+        "total_balance_usd": total_usd
+    }
+
+@app.get("/activity/")
+def get_activity(db: Session = Depends(get_db), current_user: dict = Depends(get_current_user), limit: int = 20):
+    # المدير فقط يمكنه رؤية كل الأنشطة
+    if current_user["role"] != "director":
+        raise HTTPException(status_code=403, detail="Director access required")
+    activities = []
+    transactions = db.query(Transaction).order_by(desc(Transaction.date)).limit(limit).all()
+    for tx in transactions:
+        activities.append({
+            "time": tx.date.strftime("%Y-%m-%d %H:%M:%S") if tx.date else "",
+            "type": "تحويل مالي",
+            "details": f"من {tx.sender} إلى {tx.receiver} بمبلغ {tx.amount} {tx.currency}",
+            "status": tx.status
+        })
+    return {"activities": activities}
 

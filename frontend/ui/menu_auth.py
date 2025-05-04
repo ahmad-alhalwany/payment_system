@@ -147,18 +147,12 @@ class MenuAuthMixin:
         help_menu.addAction(help_action)
 
     def refresh_data(self):
-        """Refresh application data."""
-        if hasattr(self, 'refresh_data'):
-            self.refresh_data()
-        else:
-            QMessageBox.information(self, "تحديث البيانات", "تم تحديث البيانات بنجاح")
+        """Default refresh_data: show a message. Should be overridden in main window classes if needed."""
+        QMessageBox.information(self, "تحديث البيانات", "تم تحديث البيانات بنجاح")
 
     def print_current_view(self):
-        """Print current view."""
-        if hasattr(self, 'print_current_view'):
-            self.print_current_view()
-        else:
-            QMessageBox.information(self, "طباعة", "تم إرسال الطلب للطباعة")
+        """Default print_current_view: show a message. Should be overridden in main window classes if needed."""
+        QMessageBox.information(self, "طباعة", "لا توجد وظيفة طباعة محددة في هذه النافذة.")
 
     def show_search_dialog(self):
         """Show search dialog."""
