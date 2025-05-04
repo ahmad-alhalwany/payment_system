@@ -79,8 +79,6 @@ class BranchManagementMixin:
         self._branches_auto_refresh_timer.setInterval(90000)  # 90,000 ms = 90 seconds
         self._branches_auto_refresh_timer.timeout.connect(self._auto_refresh_branches)
         self._branches_auto_refresh_timer.start()
-        # Temporary local cache for updated tax rates
-        self._local_tax_cache = {}
         
     def _process_batch(self):
         """Process a batch of pending updates"""
@@ -264,24 +262,15 @@ class BranchManagementMixin:
             self._queue_update(lambda b=batch, start=i: self._process_branch_batch(b, start))
             
     def _process_branch_batch(self, batch, start_row):
-        """Process a batch of branches"""
+        """Process a batch of branches and display correct tax rate from backend only"""
         for idx, branch in enumerate(batch):
             if not isinstance(branch, dict):
                 continue
-                
             row_position = start_row + idx
-            
-            # Get branch data with proper error handling
             branch_id = branch.get('id')
-            
-            # Use local tax cache if available
-            if branch_id in self._local_tax_cache:
-                tax_rate = self._local_tax_cache[branch_id]
-            else:
-                tax_rate = branch.get('tax_rate', 0)
-                if tax_rate < 1 and tax_rate != 0:
-                    tax_rate = tax_rate * 100
-            
+            tax_rate = branch.get('tax_rate', 0)
+            if tax_rate < 1 and tax_rate != 0:
+                tax_rate = tax_rate * 100
             items = [
                 (str(branch.get('branch_id', '')), branch_id),
                 (branch.get('name', ''), None),
@@ -292,16 +281,12 @@ class BranchManagementMixin:
                 (f"{branch.get('allocated_amount_usd', 0):,.2f}", None),
                 (f"{float(tax_rate):.2f}%", None)
             ]
-            
-            # Batch set items for better performance
             for col, (display_value, user_role_data) in enumerate(items):
                 item = QTableWidgetItem(display_value)
                 if user_role_data is not None:
                     item.setData(Qt.ItemDataRole.UserRole, user_role_data)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.branches_table.setItem(row_position, col, item)
-                
-        # Update viewport after batch
         self.branches_table.viewport().update()
 
     def add_branch(self):
@@ -835,8 +820,6 @@ class BranchManagementMixin:
                     )
                     
                     if response.status_code == 200:
-                        # Store the new tax rate in the local cache (temporary workaround)
-                        self._local_tax_cache[branch_id] = new_tax_rate
                         # Update the tax rate in the branches table
                         tax_item = QTableWidgetItem(f"{new_tax_rate:.2f}%")
                         tax_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
