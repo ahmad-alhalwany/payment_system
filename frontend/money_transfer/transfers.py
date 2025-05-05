@@ -357,25 +357,23 @@ class TransferCore:
         
         # Handle System Manager's governorate differently
         if self.branch_id == 0 or self.full_name == "System Manager":
-            # For System Manager, use the selected governorate from the dropdown
             current_branch_governorate = self.sender_governorate_input.currentText()
         else:
-            # For regular users, use the fixed governorate from the label
             current_branch_governorate = self.sender_governorate_label.text()
         
         # Extract currency code from the display text
         currency_text = self.currency_input.currentText()
         currency_code = currency_text.split("(")[1].split(")")[0] if "(" in currency_text else currency_text
         
-        # Get destination branch tax rate and calculate tax
-        dest_branch_id = self.branch_input.currentData()
+        # Get sending branch (current branch) tax rate and calculate tax
+        sending_branch_id = self.branch_id
         tax_rate = 0.0
         tax_amount = 0.0
         
         try:
             headers = {"Authorization": f"Bearer {self.user_token}"} if self.user_token else {}
             response = requests.get(
-                f"{self.api_url}/api/branches/{dest_branch_id}/tax_rate/",
+                f"{self.api_url}/api/branches/{sending_branch_id}/tax_rate/",  # Changed to use sending branch
                 headers=headers,
                 timeout=5
             )
@@ -439,7 +437,7 @@ class TransferCore:
             "employee_name": self.username,
             "branch_name": current_branch_name,
             "branch_governorate": current_branch_governorate,
-            "destination_branch_id": dest_branch_id,
+            "destination_branch_id": self.branch_input.currentData(),
             "branch_id": self.branch_id,
             "tax_rate": tax_rate,
             "tax_amount": tax_amount,

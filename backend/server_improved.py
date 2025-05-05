@@ -194,6 +194,21 @@ def save_to_db(transaction: TransactionSchema, branch_id=None, employee_id=None,
         # Check if this is a System Manager transfer (branch_id = 0)
         is_system_manager = branch_id == 0 or transaction.employee_name == "System Manager" or transaction.employee_name == "system_manager"
         
+        # --- Get tax_rate from sending branch (branch_id) ---
+        sending_branch = db.query(Branch).filter(Branch.id == branch_id).first()
+        if sending_branch:
+            tax_rate = sending_branch.tax_rate or 0.0
+        else:
+            tax_rate = 0.0
+        # Calculate tax_amount and benefited_amount
+        tax_amount = (transaction.amount or 0) * (tax_rate / 100)
+        benefited_amount = (transaction.amount or 0) - tax_amount
+
+        # Override values in transaction
+        transaction.tax_rate = tax_rate
+        transaction.tax_amount = tax_amount
+        transaction.benefited_amount = benefited_amount
+
         if is_system_manager:
             # System Manager has unlimited funds - skip all allocation checks
             print("System Manager transaction detected - bypassing fund checks")
@@ -303,9 +318,9 @@ def save_to_db(transaction: TransactionSchema, branch_id=None, employee_id=None,
             receiver_address=transaction.receiver_address or "",
             amount=transaction.amount,
             base_amount=transaction.base_amount,
-            benefited_amount=transaction.benefited_amount,
-            tax_rate=transaction.tax_rate,
-            tax_amount=transaction.tax_amount,
+            benefited_amount=benefited_amount,
+            tax_rate=tax_rate,
+            tax_amount=tax_amount,
             currency=transaction.currency,
             message=transaction.message or "",
             branch_id=branch_id,
