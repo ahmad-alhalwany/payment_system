@@ -515,23 +515,89 @@ class SetupDialog(QDialog):
         layout.addWidget(self.username_label)
         layout.addWidget(self.username_input)
 
+        # Password field with toggle button
         self.password_label = QLabel("كلمة المرور:")
+        layout.addWidget(self.password_label)
+        
+        password_layout = QHBoxLayout()
+        password_layout.setSpacing(5)
+        
         self.password_input = QLineEdit()
         self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
-        layout.addWidget(self.password_label)
-        layout.addWidget(self.password_input)
+        password_layout.addWidget(self.password_input)
+        
+        self.toggle_password_button = QPushButton("👁️", self)
+        self.toggle_password_button.setFixedWidth(40)
+        self.toggle_password_button.setStyleSheet("""
+            QPushButton {
+                background-color: #f8f9fa;
+                color: #2c3e50;
+                border: 2px solid #e0e0e0;
+                border-radius: 5px;
+                padding: 10px;
+            }
+            QPushButton:hover {
+                background-color: #e9ecef;
+            }
+        """)
+        self.toggle_password_button.clicked.connect(self.toggle_password_visibility)
+        password_layout.addWidget(self.toggle_password_button)
+        
+        layout.addLayout(password_layout)
 
+        # Confirm password field with toggle button
         self.confirm_label = QLabel("تأكيد كلمة المرور:")
+        layout.addWidget(self.confirm_label)
+        
+        confirm_layout = QHBoxLayout()
+        confirm_layout.setSpacing(5)
+        
         self.confirm_input = QLineEdit()
         self.confirm_input.setEchoMode(QLineEdit.EchoMode.Password)
-        layout.addWidget(self.confirm_label)
-        layout.addWidget(self.confirm_input)
+        confirm_layout.addWidget(self.confirm_input)
+        
+        self.toggle_confirm_button = QPushButton("👁️", self)
+        self.toggle_confirm_button.setFixedWidth(40)
+        self.toggle_confirm_button.setStyleSheet("""
+            QPushButton {
+                background-color: #f8f9fa;
+                color: #2c3e50;
+                border: 2px solid #e0e0e0;
+                border-radius: 5px;
+                padding: 10px;
+            }
+            QPushButton:hover {
+                background-color: #e9ecef;
+            }
+        """)
+        self.toggle_confirm_button.clicked.connect(self.toggle_confirm_visibility)
+        confirm_layout.addWidget(self.toggle_confirm_button)
+        
+        layout.addLayout(confirm_layout)
 
         self.submit_button = QPushButton("تهيئة النظام")
         self.submit_button.clicked.connect(self.submit_setup)
         layout.addWidget(self.submit_button)
 
         self.setLayout(layout)
+
+    def toggle_password_visibility(self):
+        """Toggle password visibility between hidden and visible."""
+        if self.password_input.echoMode() == QLineEdit.EchoMode.Password:
+            self.password_input.setEchoMode(QLineEdit.EchoMode.Normal)
+            self.toggle_password_button.setText("👁️‍🗨️")
+        else:
+            self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
+            self.toggle_password_button.setText("👁️")
+
+    def toggle_confirm_visibility(self):
+        """Toggle confirm password visibility between hidden and visible."""
+        if self.confirm_input.echoMode() == QLineEdit.EchoMode.Password:
+            self.confirm_input.setEchoMode(QLineEdit.EchoMode.Normal)
+            self.toggle_confirm_button.setText("👁️‍🗨️")
+        else:
+            self.confirm_input.setEchoMode(QLineEdit.EchoMode.Password)
+            self.toggle_confirm_button.setText("👁️")
 
     def submit_setup(self):
         username = self.username_input.text()
