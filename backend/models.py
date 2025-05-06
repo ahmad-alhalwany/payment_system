@@ -87,7 +87,6 @@ class Transaction(Base):
     # Branch relationships
     branch_id = Column(Integer, ForeignKey("branches.id"))
     destination_branch_id = Column(Integer, ForeignKey("branches.id"))
-    type = Column(String)
     
     # Tax information
     tax_amount = Column(Float, default=0.0)  # Amount of tax collected

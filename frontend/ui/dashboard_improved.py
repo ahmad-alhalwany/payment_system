@@ -19,6 +19,10 @@ from dashboard.receipt_printer import ReceiptPrinterMixin
 from dashboard.report_handler import ReportHandlerMixin
 from dashboard.settings_handler import SettingsHandlerMixin
 from dashboard.employee_management import EmployeeManagementMixin
+from ui.user_management_improved import AddEmployeeDialog
+from dashboard.inventory import InventoryTab
+from ui.user_search import UserSearchDialog
+from ui.password_reset import PasswordResetDialog
 
 import os
 import time
@@ -185,7 +189,6 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
         self.current_zoom = 100  # Track current zoom level
         self.full_name = full_name
         # --- Add missing QLabel attributes for stats ---
-        from PyQt6.QtWidgets import QLabel
         self.employees_count = QLabel("0")
         self.transactions_count = QLabel("0")
         self.amount_total = QLabel("0")
@@ -401,7 +404,6 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
 
         # Helper to create a button with icon and label
         def create_action_button(icon_path, color, text, callback):
-            from PyQt6.QtWidgets import QVBoxLayout, QLabel
             btn_layout = QVBoxLayout()
             btn_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
             btn = ModernButton("", color=color)
@@ -1235,95 +1237,10 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
         employee_data = self.employees_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
         employee_username = employee_data.get("username", "")
         
-        # Create a dialog to reset password
-        dialog = QDialog(self)
-        dialog.setWindowTitle(f"إعادة تعيين كلمة المرور: {employee_username}")
-        dialog.setGeometry(150, 150, 400, 200)
-        dialog.setStyleSheet("""
-            QDialog {
-                background-color: #f5f5f5;
-                font-family: Arial;
-            }
-            QLabel {
-                color: #333;
-            }
-            QLineEdit {
-                border: 1px solid #ccc;
-                border-radius: 5px;
-                padding: 5px;
-                background-color: white;
-            }
-        """)
-        
-        layout = QVBoxLayout()
-        
-        # Password fields
-        form_layout = QFormLayout()
-        
-        new_password_label = QLabel("كلمة المرور الجديدة:")
-        new_password_input = QLineEdit()
-        new_password_input.setEchoMode(QLineEdit.EchoMode.Password)
-        form_layout.addRow(new_password_label, new_password_input)
-        
-        confirm_password_label = QLabel("تأكيد كلمة المرور:")
-        confirm_password_input = QLineEdit()
-        confirm_password_input.setEchoMode(QLineEdit.EchoMode.Password)
-        form_layout.addRow(confirm_password_label, confirm_password_input)
-        
-        layout.addLayout(form_layout)
-        
-        # Buttons
-        buttons_layout = QHBoxLayout()
-        
-        cancel_button = ModernButton("إلغاء", color="#e74c3c")
-        cancel_button.clicked.connect(dialog.reject)
-        buttons_layout.addWidget(cancel_button)
-        
-        save_button = ModernButton("حفظ", color="#2ecc71")
-        
-        def reset_password_action():
-            new_password = new_password_input.text()
-            confirm_password = confirm_password_input.text()
-            
-            if not new_password:
-                QMessageBox.warning(dialog, "تنبيه", "الرجاء إدخال كلمة المرور الجديدة")
-                return
-            
-            if new_password != confirm_password:
-                QMessageBox.warning(dialog, "تنبيه", "كلمة المرور وتأكيدها غير متطابقين")
-                return
-            
-            try:
-                headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
-                data = {
-                    "username": employee_username,
-                    "new_password": new_password
-                }
-                response = requests.post(f"{self.api_url}/reset-password/", json=data, headers=headers)
-                
-                if response.status_code == 200:
-                    QMessageBox.information(dialog, "نجاح", "تم إعادة تعيين كلمة المرور بنجاح")
-                    dialog.accept()
-                else:
-                    error_msg = f"فشل إعادة تعيين كلمة المرور: رمز الحالة {response.status_code}"
-                    try:
-                        error_data = response.json()
-                        if "detail" in error_data:
-                            error_msg = error_data["detail"]
-                    except:
-                        pass
-                    
-                    QMessageBox.warning(dialog, "خطأ", error_msg)
-            except Exception as e:
-                print(f"Error resetting password: {e}")
-                QMessageBox.warning(dialog, "خطأ", f"تعذر إعادة تعيين كلمة المرور: {str(e)}")
-        
-        save_button.clicked.connect(reset_password_action)
-        buttons_layout.addWidget(save_button)
-        
-        layout.addLayout(buttons_layout)
-        
-        dialog.setLayout(layout)
+        # Use the dedicated password reset dialog
+        dialog = PasswordResetDialog(is_admin=True, token=self.token)
+        dialog.username_input.setText(employee_username)
+        dialog.username_input.setReadOnly(True)  # Prevent changing username
         dialog.exec()
     
     def view_transaction(self):
@@ -1510,12 +1427,10 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
 
     def search_transaction(self):
         """Open transaction search dialog."""
-        from ui.user_search import UserSearchDialog
         dialog = UserSearchDialog(token=self.token, parent=self, received=True)
         dialog.exec()
     def setup_inventory_tab(self):
         """Set up the inventory tab for tracking tax receivables and profits."""
-        from dashboard.inventory import InventoryTab
         
         layout = QVBoxLayout()
         
@@ -1871,7 +1786,6 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
 
     def add_employee(self):
         """Open dialog to add a new employee."""
-        from ui.user_management_improved import AddEmployeeDialog
         dialog = AddEmployeeDialog(
             is_admin=True,  # Director has admin privileges
             token=self.token,
@@ -1886,8 +1800,6 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
 
     def create_transaction_type_item(self, transaction):
         """Return a colored QTableWidgetItem for the transaction type."""
-        from PyQt6.QtWidgets import QTableWidgetItem
-        from PyQt6.QtGui import QColor
         ttype = transaction.get("type", "")
         if ttype == "incoming" or (transaction.get("destination_branch_id") and not transaction.get("branch_id")):
             item = QTableWidgetItem("وارد")

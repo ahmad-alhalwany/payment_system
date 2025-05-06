@@ -31,13 +31,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 # Database URL
-SQLALCHEMY_DATABASE_URL = "sqlite:///./transactions.db"
+engine = create_engine(
+    "postgresql+psycopg2://postgres:postgres@localhost/postgres"
+)
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
-engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+# engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
+SessionLocal = sessionmaker(autoflush=False, bind=engine)
 
 # Create the database tables if they don't exist
 Base.metadata.create_all(bind=engine)
