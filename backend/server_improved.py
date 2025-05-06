@@ -1,7 +1,9 @@
+import logging
+logger = logging.getLogger(__name__)
 from fastapi import FastAPI, HTTPException, Depends, status
 from sqlalchemy import create_engine, func, and_, or_, desc
 from sqlalchemy.orm import sessionmaker, Session, joinedload, aliased
-from models import User, Branch, Base, BranchFund, Notification, Transaction
+from models import User, Branch, Base, BranchFund, Notification, Transaction, BranchProfits
 from pydantic import BaseModel, validator, ValidationError
 import uuid
 from datetime import datetime, timedelta
@@ -200,9 +202,9 @@ def save_to_db(transaction: TransactionSchema, branch_id=None, employee_id=None,
             tax_rate = sending_branch.tax_rate or 0.0
         else:
             tax_rate = 0.0
-        # Calculate tax_amount and benefited_amount
-        tax_amount = (transaction.amount or 0) * (tax_rate / 100)
-        benefited_amount = (transaction.amount or 0) - tax_amount
+        # استخدم benefited_amount كما هو من الإدخال
+        benefited_amount = transaction.benefited_amount
+        tax_amount = benefited_amount * (tax_rate / 100)
 
         # Override values in transaction
         transaction.tax_rate = tax_rate
@@ -1571,6 +1573,61 @@ async def update_user(
         "branch_id": db_user.branch_id
     }
 
+# Add this function to handle profit recording
+def record_branch_profit(db: Session, transaction: Transaction):
+    """Record profit for a completed transaction."""
+    try:
+        # Important: We only calculate profits based on benefited_amount, not the total amount
+        if transaction.benefited_amount <= 0:
+            logger.info(f"No benefited amount for transaction {transaction.id}, skipping profit calculation")
+            return
+
+        # Calculate profit from benefited amount only
+        tax_on_benefited = transaction.benefited_amount * (transaction.tax_rate / 100)
+        profit_from_benefited = transaction.benefited_amount - tax_on_benefited
+        
+        # Create profit record for benefited amount
+        if profit_from_benefited > 0:
+            benefited_profit = BranchProfits(
+                branch_id=transaction.branch_id,
+                transaction_id=transaction.id,
+                profit_amount=profit_from_benefited,
+                currency=transaction.currency,
+                source_type='benefited_amount',
+                date=transaction.date
+            )
+            db.add(benefited_profit)
+            logger.info(f"Recorded profit from benefited amount: {profit_from_benefited} {transaction.currency}")
+        
+        # Record tax amount as separate profit
+        if tax_on_benefited > 0:
+            tax_profit = BranchProfits(
+                branch_id=transaction.branch_id,
+                transaction_id=transaction.id,
+                profit_amount=tax_on_benefited,
+                currency=transaction.currency,
+                source_type='tax',
+                date=transaction.date
+            )
+            db.add(tax_profit)
+            logger.info(f"Recorded profit from tax: {tax_on_benefited} {transaction.currency}")
+        
+        # Add audit log entry
+        logger.info(
+            f"Transaction {transaction.id} profits:"
+            f"\nTotal Amount: {transaction.amount} {transaction.currency}"
+            f"\nBenefited Amount: {transaction.benefited_amount} {transaction.currency}"
+            f"\nTax Rate: {transaction.tax_rate}%"
+            f"\nTax on Benefited: {tax_on_benefited} {transaction.currency}"
+            f"\nProfit from Benefited: {profit_from_benefited} {transaction.currency}"
+        )
+        
+        db.commit()
+    except Exception as e:
+        logger.error(f"Error recording branch profit: {str(e)}")
+        db.rollback()
+        raise
+
 @app.post("/update-transaction-status/")
 def update_transaction_status(
     status_update: TransactionStatus, 
@@ -1578,14 +1635,13 @@ def update_transaction_status(
     db: Session = Depends(get_db)
 ):
     try:
-        # Get transaction details including amount and branch
         transaction = db.query(Transaction).filter(
             Transaction.id == status_update.transaction_id
-        ).with_for_update().first()  # Add row-level locking
+        ).with_for_update().first()
         
         if not transaction:
             raise HTTPException(status_code=404, detail="Transaction not found")
-            
+        
         branch_id = transaction.branch_id
         amount = transaction.amount
         old_status = transaction.status
@@ -1600,17 +1656,22 @@ def update_transaction_status(
                     detail="Not authorized to modify this transaction"
                 )
 
-        # Handle fund allocation changes
-        if old_status == "processing" and new_status in ["cancelled", "rejected"]:
+        # Handle fund allocation and profits
+        if old_status == "processing" and new_status == "completed":
+            # Record profits when transaction is completed
+            record_branch_profit(db, transaction)
+        elif (
+            (old_status == "processing" and new_status in ["cancelled", "rejected"]) or
+            (old_status == "completed" and new_status in ["cancelled", "rejected"])
+        ):
             # Refund the amount to the originating branch
-            branch = db.query(Branch).filter(Branch.id == branch_id).with_for_update().first()  # Add row-level locking
+            branch = db.query(Branch).filter(Branch.id == branch_id).with_for_update().first()
             if branch:
                 branch.allocated_amount += amount
                 if transaction.currency == "SYP":
                     branch.allocated_amount_syp += amount
                 elif transaction.currency == "USD":
                     branch.allocated_amount_usd += amount
-                
                 # Record fund refund
                 fund_record = BranchFund(
                     branch_id=branch_id,
@@ -1620,11 +1681,10 @@ def update_transaction_status(
                     description=f"Refund for {new_status} transaction {status_update.transaction_id}"
                 )
                 db.add(fund_record)
-
-        elif new_status == "completed" and old_status != "completed":
-            # Deduct from destination branch's allocation if needed
-            # (Add this logic if completing transactions affects allocations)
-            pass
+            # Remove profit records if transaction is cancelled/rejected
+            db.query(BranchProfits).filter(
+                BranchProfits.transaction_id == transaction.id
+            ).delete()
 
         # Update transaction status
         transaction.status = new_status
@@ -1647,13 +1707,7 @@ def update_transaction_status(
         try:
             db.commit()
             return {"status": "success", "message": "Status updated with fund adjustment"}
-        except sqlalchemy.exc.IntegrityError as e:
-            db.rollback()
-            raise HTTPException(
-                status_code=400,
-                detail=f"Database integrity error: {str(e)}"
-            )
-        except sqlalchemy.exc.SQLAlchemyError as e:
+        except Exception as e:
             db.rollback()
             raise HTTPException(
                 status_code=500,
@@ -2398,4 +2452,216 @@ def get_activity(db: Session = Depends(get_db), current_user: dict = Depends(get
             "status": tx.status
         })
     return {"activities": activities}
+
+@app.get("/api/branches/{branch_id}/profits/")
+async def get_branch_profits(
+    branch_id: int,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    currency: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
+):
+    """Get profits for a specific branch with filters."""
+    # Authorization check
+    if current_user["role"] != "branch_manager" or current_user["branch_id"] != branch_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only branch managers can view their own branch profits"
+        )
+
+    try:
+        # Build base query for transactions
+        query = db.query(Transaction).filter(
+            Transaction.branch_id == branch_id,  # Only outgoing transactions
+            Transaction.status == 'completed'    # Only completed transactions
+        )
+
+        # Apply date filters
+        if start_date:
+            query = query.filter(Transaction.date >= datetime.strptime(start_date, "%Y-%m-%d"))
+        if end_date:
+            query = query.filter(Transaction.date <= datetime.strptime(end_date, "%Y-%m-%d"))
+
+        # Apply currency filter
+        if currency:
+            query = query.filter(Transaction.currency == currency)
+
+        # Execute query
+        transactions = query.all()
+
+        # Calculate profits
+        total_syp = 0
+        total_usd = 0
+        transaction_list = []
+
+        for tx in transactions:
+            # حساب الضريبة بشكل صحيح فقط على المبلغ المستفاد
+            tax_amount = tx.benefited_amount * (tx.tax_rate / 100)
+            benefited_profit = tx.benefited_amount - tax_amount
+            tax_profit = 0  # الضريبة ليست ربح للفرع المرسل
+            total_profit = benefited_profit
+
+            # تحديث الإجماليات
+            if tx.currency == "SYP":
+                total_syp += total_profit
+            elif tx.currency == "USD":
+                total_usd += total_profit
+
+            transaction_list.append({
+                "id": tx.id,
+                "date": tx.date.strftime("%Y-%m-%d %H:%M:%S"),
+                "benefited_amount": float(tx.benefited_amount),
+                "tax_rate": float(tx.tax_rate),
+                "tax_amount": float(tax_amount),
+                "benefited_profit": float(benefited_profit),
+                "tax_profit": float(tax_profit),
+                "profit": float(total_profit),
+                "currency": tx.currency,
+                "status": tx.status
+            })
+
+        return {
+            "total_profits_syp": float(total_syp),
+            "total_profits_usd": float(total_usd),
+            "total_transactions": len(transactions),
+            "transactions": transaction_list
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting branch profits: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error retrieving profits data: {str(e)}"
+        )
+
+@app.get("/api/branches/{branch_id}/profits/summary/")
+async def get_branch_profits_summary(
+    branch_id: int,
+    period: str = "monthly",  # monthly, yearly, or all-time
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
+):
+    """Get a summary of branch profits over time."""
+    # Authorization check
+    if current_user["role"] != "branch_manager" or current_user["branch_id"] != branch_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only branch managers can view their own branch profits"
+        )
+
+    try:
+        # Calculate start date based on period
+        today = datetime.now()
+        if period == "monthly":
+            start_date = today.replace(day=1)
+        elif period == "yearly":
+            start_date = today.replace(month=1, day=1)
+        else:  # all-time
+            start_date = None
+
+        # Build query
+        query = db.query(
+            func.sum(Transaction.benefited_amount - (Transaction.benefited_amount * (Transaction.tax_rate / 100))).label('profit'),
+            Transaction.currency
+        ).filter(
+            Transaction.branch_id == branch_id,
+            Transaction.status == 'completed'
+        )
+
+        if start_date:
+            query = query.filter(Transaction.date >= start_date)
+
+        # Group by currency
+        query = query.group_by(Transaction.currency)
+
+        # Execute query
+        results = query.all()
+
+        # Format results
+        summary = {
+            "period": period,
+            "profits": {
+                "SYP": 0.0,
+                "USD": 0.0
+            }
+        }
+
+        for profit, currency in results:
+            if currency in summary["profits"]:
+                summary["profits"][currency] = float(profit or 0)
+
+        return summary
+
+    except Exception as e:
+        logger.error(f"Error getting branch profits summary: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error retrieving profits summary: {str(e)}"
+        )
+
+@app.get("/api/branches/{branch_id}/profits/statistics/")
+async def get_branch_profits_statistics(
+    branch_id: int,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
+):
+    """Get detailed statistics about branch profits."""
+    # Authorization check
+    if current_user["role"] != "branch_manager" or current_user["branch_id"] != branch_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only branch managers can view their own branch statistics"
+        )
+
+    try:
+        # Get total transactions and average profit per transaction
+        stats = db.query(
+            func.count(Transaction.id).label('total_transactions'),
+            func.avg(Transaction.benefited_amount - (Transaction.benefited_amount * (Transaction.tax_rate / 100))).label('avg_profit'),
+            Transaction.currency
+        ).filter(
+            Transaction.branch_id == branch_id,
+            Transaction.status == 'completed'
+        ).group_by(Transaction.currency).all()
+
+        # Calculate highest profit transaction
+        highest_profit_tx = db.query(Transaction).filter(
+            Transaction.branch_id == branch_id,
+            Transaction.status == 'completed'
+        ).order_by(desc(Transaction.benefited_amount - (Transaction.benefited_amount * (Transaction.tax_rate / 100)))).first()
+
+        # Format statistics
+        statistics = {
+            "total_transactions": {},
+            "average_profit": {},
+            "highest_profit": {
+                "amount": 0,
+                "currency": "",
+                "date": None,
+                "transaction_id": None
+            }
+        }
+
+        for count, avg, currency in stats:
+            statistics["total_transactions"][currency] = count
+            statistics["average_profit"][currency] = float(avg or 0)
+
+        if highest_profit_tx:
+            profit = highest_profit_tx.benefited_amount - (highest_profit_tx.benefited_amount * (highest_profit_tx.tax_rate / 100))
+            statistics["highest_profit"] = {
+                "amount": float(profit),
+                "currency": highest_profit_tx.currency,
+                "date": highest_profit_tx.date.strftime("%Y-%m-%d %H:%M:%S"),
+                "transaction_id": highest_profit_tx.id
+            }
+
+        return statistics
+
+    except Exception as e:
+        logger.error(f"Error getting branch statistics: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error retrieving branch statistics: {str(e)}"
+        )
 

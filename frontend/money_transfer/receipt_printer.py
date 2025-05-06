@@ -394,33 +394,48 @@ class ReceiptPrinter:
             QMessageBox.warning(self, "خطأ في الطباعة", f"حدث خطأ أثناء تحضير البيانات للطباعة: {str(e)}")
 
     def print_transaction(self, item):
-        """Print outgoing transaction receipt."""
+        """Print outgoing transaction receipt (supports QTableView and QTableWidget)."""
         try:
-            # Get row data
-            row = item.row()
-            
-            # Clean amount string and convert to float
-            amount_str = self.transactions_table.item(row, 4).text().replace(',', '')  # Remove commas
-            
-            # Collect transaction data
-            transaction_data = {
-                'id': self.transactions_table.item(row, 0).text(),
-                'date': self.transactions_table.item(row, 1).text(),
-                'sender': self.transactions_table.item(row, 2).text(),
-                'receiver': self.transactions_table.item(row, 3).text(),
-                'amount': float(amount_str),  # Convert clean string to float
-                'currency': self.transactions_table.item(row, 5).text(),
-                'receiver_governorate': self.transactions_table.item(row, 6).text(),
-                'status': self.transactions_table.item(row, 7).text(),
-                'employee_name': self.transactions_table.item(row, 8).text(),
-                'sending_branch_name': self.transactions_table.item(row, 9).text(),
-                'destination_branch_name': self.transactions_table.item(row, 10).text(),
-                'branch_governorate': self.transactions_table.item(row, 11).text(),
-                'type': 'sent'
-            }
-
+            # إذا كان item عبارة عن dict (من النموذج)
+            if isinstance(item, dict):
+                transaction_data = item
+            # إذا كان item عبارة عن transaction_id (str)
+            elif isinstance(item, str):
+                # ابحث عن الصف في النموذج
+                model = getattr(self, 'transaction_model', None)
+                if model:
+                    for row in range(model.rowCount()):
+                        tx = model.get_transaction(row)
+                        if tx and tx.get('id') == item:
+                            transaction_data = tx
+                            break
+                    else:
+                        QMessageBox.warning(self, "خطأ", "لم يتم العثور على بيانات التحويل")
+                        return
+                else:
+                    QMessageBox.warning(self, "خطأ", "لا يوجد نموذج بيانات")
+                    return
+            # إذا كان item عبارة عن QTableWidgetItem (قديم)
+            else:
+                row = item.row()
+                # Clean amount string and convert to float
+                amount_str = self.transactions_table.item(row, 4).text().replace(',', '')
+                transaction_data = {
+                    'id': self.transactions_table.item(row, 0).text(),
+                    'date': self.transactions_table.item(row, 1).text(),
+                    'sender': self.transactions_table.item(row, 2).text(),
+                    'receiver': self.transactions_table.item(row, 3).text(),
+                    'amount': float(amount_str),
+                    'currency': self.transactions_table.item(row, 5).text(),
+                    'receiver_governorate': self.transactions_table.item(row, 6).text(),
+                    'status': self.transactions_table.item(row, 7).text(),
+                    'employee_name': self.transactions_table.item(row, 8).text(),
+                    'sending_branch_name': self.transactions_table.item(row, 9).text(),
+                    'destination_branch_name': self.transactions_table.item(row, 10).text(),
+                    'branch_governorate': self.transactions_table.item(row, 11).text(),
+                    'type': 'sent'
+                }
             # Print the receipt using the standard print_receipt method
             self.print_receipt(transaction_data)
-
         except Exception as e:
             QMessageBox.warning(self, "خطأ في الطباعة", f"حدث خطأ أثناء تحضير البيانات للطباعة: {str(e)}")            

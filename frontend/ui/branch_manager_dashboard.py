@@ -19,6 +19,7 @@ from utils.helpers import get_status_arabic, get_status_color
 from ui.menu_auth import MenuAuthMixin
 from branch_dashboard.employees_tab import EmployeesTabMixin
 from branch_dashboard.reports_tab import ReportsTabMixin
+from branch_dashboard.profits_tab import ProfitsTabMixin
 import time
 
 class WorkerThread(QThread):
@@ -36,7 +37,7 @@ class WorkerThread(QThread):
             self.result = e
         self.finished.emit(self.result)
 
-class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, ReportsTabMixin):
+class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, ReportsTabMixin, ProfitsTabMixin):
     """Branch Manager Dashboard for the Internal Payment System."""
     
     def __init__(self, branch_id, token=None, user_id=None, username=None, full_name=None):
@@ -125,6 +126,7 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
         self.employees_tab = QWidget()
         self.transfers_tab = QWidget()
         self.reports_tab = QWidget()
+        self.profits_tab = QWidget()
         self.settings_tab = QWidget()
         
         # Set up tabs
@@ -132,6 +134,7 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
         self.setup_employees_tab()
         self.setup_transfers_tab()
         self.setup_reports_tab()
+        self.setup_profits_tab()
         self.setup_settings_tab()
         
         # Add tabs to widget
@@ -139,6 +142,7 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
         self.tab_widget.addTab(self.employees_tab, "إدارة الموظفين")
         self.tab_widget.addTab(self.transfers_tab, "التحويلات")
         self.tab_widget.addTab(self.reports_tab, "التقارير")
+        self.tab_widget.addTab(self.profits_tab, "الأرباح")
         self.tab_widget.addTab(self.settings_tab, "الإعدادات")
         
         main_layout.addWidget(self.tab_widget)

@@ -1504,33 +1504,35 @@ class MoneyTransferApp(QMainWindow, ReceiptPrinter, TransferCore, MenuAuthMixin)
         search_dialog.exec()
 
     def print_transaction(self, item):
-        """Print outgoing transaction receipt."""
+        """Print outgoing transaction receipt (يدعم QTableView مع النموذج)."""
         try:
-            # Get row data
-            if isinstance(item, str):
-                # If called with transaction_id string
-                for row in range(self.transactions_table.rowCount()):
-                    if self.transactions_table.item(row, 0).text() == item:
-                        break
+            # إذا كان item عبارة عن dict (من النموذج)
+            if isinstance(item, dict):
+                transaction_data = item
+            # إذا كان item عبارة عن transaction_id (str)
+            elif isinstance(item, str):
+                model = getattr(self, 'transaction_model', None)
+                if model:
+                    for row in range(model.rowCount()):
+                        tx = model.get_transaction(row)
+                        if tx and tx.get('id') == item:
+                            transaction_data = tx
+                            break
+                    else:
+                        QMessageBox.warning(self, "خطأ", "لم يتم العثور على بيانات التحويل")
+                        return
+                else:
+                    QMessageBox.warning(self, "خطأ", "لا يوجد نموذج بيانات")
+                    return
             else:
-                # If called with table item
+                # إذا كان item QTableWidgetItem (قديم)
                 row = item.row()
-
-            # Get transaction ID and fetch complete data
-            transaction_id = self.transactions_table.item(row, 0).text()
-            headers = {"Authorization": f"Bearer {self.user_token}"} if self.user_token else {}
-            response = requests.get(f"{self.api_url}/transactions/{transaction_id}", headers=headers)
-
-            if response.status_code == 200:
-                transaction_details = response.json()
                 amount_str = self.transactions_table.item(row, 4).text().replace(',', '')
                 transaction_data = {
-                    'id': transaction_id,
+                    'id': self.transactions_table.item(row, 0).text(),
                     'date': self.transactions_table.item(row, 1).text(),
                     'sender': self.transactions_table.item(row, 2).text(),
-                    'sender_mobile': transaction_details.get('sender_mobile', ''),
                     'receiver': self.transactions_table.item(row, 3).text(),
-                    'receiver_mobile': transaction_details.get('receiver_mobile', ''),
                     'amount': float(amount_str),
                     'currency': self.transactions_table.item(row, 5).text(),
                     'receiver_governorate': self.transactions_table.item(row, 6).text(),
@@ -1539,14 +1541,9 @@ class MoneyTransferApp(QMainWindow, ReceiptPrinter, TransferCore, MenuAuthMixin)
                     'sending_branch_name': self.transactions_table.item(row, 9).text(),
                     'destination_branch_name': self.transactions_table.item(row, 10).text(),
                     'branch_governorate': self.transactions_table.item(row, 11).text(),
-                    'received_status': self.transactions_table.item(row, 7).text(),
-                    'received_by': self.full_name,
-                    'received_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     'type': 'sent'
                 }
-                self.print_receipt(transaction_data)
-            else:
-                QMessageBox.warning(self, "خطأ", "فشل في استرجاع بيانات التحويل الكاملة")
+            self.print_receipt(transaction_data)
         except Exception as e:
             QMessageBox.warning(self, "خطأ في الطباعة", f"حدث خطأ أثناء تحضير البيانات للطباعة: {str(e)}")
 

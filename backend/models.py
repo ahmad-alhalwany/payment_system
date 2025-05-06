@@ -37,6 +37,7 @@ class Branch(Base):
     users = relationship("User", back_populates="branch")
     sent_transactions = relationship("Transaction", foreign_keys="[Transaction.branch_id]", back_populates="branch")
     received_transactions = relationship("Transaction", foreign_keys="[Transaction.destination_branch_id]", back_populates="destination_branch")
+    profits = relationship("BranchProfits", back_populates="branch")
 
 
 class BranchFund(Base):
@@ -108,7 +109,8 @@ class Transaction(Base):
     destination_branch = relationship("Branch", foreign_keys=[destination_branch_id], back_populates="received_transactions")
     employee = relationship("User", foreign_keys=[employee_id])
     receiver_user = relationship("User", foreign_keys=[received_by])
-    
+    profits = relationship("BranchProfits", back_populates="transaction")
+
 class Notification(Base):
     __tablename__ = "notifications"
 
@@ -119,4 +121,25 @@ class Notification(Base):
     status = Column(String, default="pending")
     created_at = Column(DateTime, default=datetime.now)
 
-    transaction = relationship("Transaction", backref="notifications")   
+    transaction = relationship("Transaction", backref="notifications")
+
+class BranchProfits(Base):
+    __tablename__ = "branch_profits"
+
+    id = Column(Integer, primary_key=True, index=True)
+    branch_id = Column(Integer, ForeignKey("branches.id"))
+    transaction_id = Column(String, ForeignKey("transactions.id"))
+    profit_amount = Column(Float, default=0.0)
+    currency = Column(String)
+    source_type = Column(String)  # 'benefited_amount', 'tax', etc.
+    date = Column(DateTime, default=datetime.now)
+    
+    # Relationships
+    branch = relationship("Branch", back_populates="profits")
+    transaction = relationship("Transaction", back_populates="profits")
+
+# Add relationship to Branch class
+Branch.profits = relationship("BranchProfits", back_populates="branch")
+
+# Add relationship to Transaction class
+Transaction.profits = relationship("BranchProfits", back_populates="transaction")   
