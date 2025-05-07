@@ -177,6 +177,7 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
     def __init__(self, token=None, full_name="مدير النظام"):
         super().__init__()
         BranchManagementMixin.__init__(self)
+        EmployeeManagementMixin.__init__(self)  # <-- إضافة هذا السطر
         self.token = token
         self.api_url = os.environ["API_URL"]
         self.current_page = 1
@@ -864,7 +865,7 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
         buttons_layout.addWidget(reset_password_button)
         
         refresh_button = ModernButton("تحديث", color="#9b59b6")
-        refresh_button.clicked.connect(self.load_employees)
+        refresh_button.clicked.connect(self.refresh_employees)
         buttons_layout.addWidget(refresh_button)
         
         layout.addLayout(buttons_layout)
@@ -2122,7 +2123,7 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
         buttons_layout.addWidget(reset_password_button)
         
         refresh_button = ModernButton("تحديث", color="#9b59b6")
-        refresh_button.clicked.connect(self.load_employees)
+        refresh_button.clicked.connect(self.refresh_employees)
         buttons_layout.addWidget(refresh_button)
         
         layout.addLayout(buttons_layout)
@@ -2509,3 +2510,7 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
                     self.transactions_count.setText(str(stats.get("total", 0)))
         except Exception as e:
             print(f"Error loading transaction stats: {e}")
+
+    def refresh_employees(self):
+        self._employees_cache = None
+        self.load_employees()
