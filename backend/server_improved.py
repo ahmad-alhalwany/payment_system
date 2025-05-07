@@ -335,7 +335,6 @@ def save_to_db(transaction: TransactionSchema, branch_id=None, employee_id=None,
             branch_governorate=transaction.branch_governorate,
             status="processing",
             is_received=False,
-            type="transfer",
             date=transaction_date
         )
         db.add(new_transaction)
@@ -1040,22 +1039,22 @@ def get_branches(db: Session = Depends(get_db), current_user: dict = Depends(get
 def get_branch(branch_id: int, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
     # Special handling for System Manager branch (ID 0)
     if branch_id == 0:
-        # Return a virtual branch with very high (but not infinite) funds for the System Manager
         return {
             "id": 0,
-            "branch_id": "MAIN",
-            "name": "Main Branch",
-            "location": "System",
-            "governorate": "System Manager",
-            "allocated_amount": 9999999999.0,  # Very high amount instead of infinity
+            "branch_id": "0",
+            "name": "System Manager",
+            "location": "Main Office",
+            "governorate": "رئيسي",
+            "allocated_amount": 9999999999.0,
+            "allocated_amount_syp": 9999999999.0,
+            "allocated_amount_usd": 9999999999.0,
+            "tax_rate": 0.0,
             "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "total_sent": 0.0,
-            "total_received": 0.0,
-            "total_allocated": 9999999999.0,  # Very high amount instead of infinity
-            "available_balance": 9999999999.0,  # Very high amount instead of infinity
             "financial_stats": {
-                "available_balance": 9999999999.0,  # Very high amount instead of infinity
-                "total_allocated": 9999999999.0,  # Very high amount instead of infinity
+                "available_balance": 9999999999.0,
+                "available_balance_syp": 9999999999.0,
+                "available_balance_usd": 9999999999.0,
+                "total_allocated": 9999999999.0,
                 "total_sent": 0.0,
                 "total_received": 0.0
             }
