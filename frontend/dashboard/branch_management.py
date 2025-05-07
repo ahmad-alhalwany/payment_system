@@ -132,6 +132,13 @@ class BranchDataCache:
         if self._get_total_cache_size() >= self._max_cache_size:
             self._remove_least_important_cache()
 
+    def has_changes(self):
+        """Check if there are any changes in the cache"""
+        for cache_type in self._cache:
+            if self._cache[cache_type]:
+                return True
+        return False
+
 class BranchManagementMixin:
     """Mixin handling all branch-related operations"""
     
@@ -145,69 +152,83 @@ class BranchManagementMixin:
         
         # Smart auto-refresh timer for branches table
         self._branches_auto_refresh_timer = QTimer()
-        self._branches_auto_refresh_timer.setInterval(90000)  # 90 seconds initial interval
+        self._branches_auto_refresh_timer.setInterval(180000)  # 3 minutes initial interval
         self._branches_auto_refresh_timer.timeout.connect(self._smart_refresh_branches)
         self._branches_auto_refresh_timer.start()
         
         # Track last user activity
         self._last_activity_time = time.time()
-        self._min_refresh_interval = 30000  # 30 seconds minimum
+        self._min_refresh_interval = 60000  # 1 minute minimum
         self._max_refresh_interval = 300000  # 5 minutes maximum
         
+        # Add update queue to prevent multiple simultaneous updates
+        self._is_updating = False
+        self._update_queue = []
+        
+    def _smart_refresh_branches(self):
+        """Smart refresh that adapts to user activity and prevents overlapping updates"""
+        if self._is_updating:
+            return
+            
+        try:
+            self._is_updating = True
+            current_time = time.time()
+            time_since_last_activity = current_time - self._last_activity_time
+            
+            # If user is inactive for more than 5 minutes, reduce refresh rate
+            if time_since_last_activity > 300:
+                self._branches_auto_refresh_timer.setInterval(self._max_refresh_interval)
+            else:
+                # Calculate dynamic interval based on activity
+                dynamic_interval = min(
+                    max(
+                        int(time_since_last_activity * 1000),
+                        self._min_refresh_interval
+                    ),
+                    self._max_refresh_interval
+                )
+                self._branches_auto_refresh_timer.setInterval(dynamic_interval)
+            
+            # Only invalidate and reload if there have been changes
+            if self.branch_cache.has_changes():
+                self.branch_cache.invalidate('branches')
+                self.load_branches()
+        finally:
+            self._is_updating = False
+            
     def _process_batch(self):
-        """Process a batch of pending updates"""
-        if not self._pending_updates:
+        """Process a batch of pending updates with rate limiting"""
+        if not self._pending_updates or self._is_updating:
             self._update_timer.stop()
             return
             
-        batch = self._pending_updates[:self._batch_size]
-        self._pending_updates = self._pending_updates[self._batch_size:]
-        
-        for update_func in batch:
-            update_func()
+        try:
+            self._is_updating = True
+            batch = self._pending_updates[:self._batch_size]
+            self._pending_updates = self._pending_updates[self._batch_size:]
             
-        if self._pending_updates:
-            self._update_timer.start(50)  # Process next batch after 50ms
+            for update_func in batch:
+                update_func()
+                
+            if self._pending_updates:
+                self._update_timer.start(100)  # Process next batch after 100ms
+        finally:
+            self._is_updating = False
             
     def _queue_update(self, update_func):
-        """Queue an update function for batch processing"""
-        self._pending_updates.append(update_func)
-        if not self._update_timer.isActive():
-            self._update_timer.start(50)
+        """Queue an update function for batch processing with debouncing"""
+        if update_func not in self._pending_updates:
+            self._pending_updates.append(update_func)
+            if not self._update_timer.isActive():
+                self._update_timer.start(100)
 
-    def _smart_refresh_branches(self):
-        """Smart refresh that adapts to user activity"""
-        current_time = time.time()
-        time_since_last_activity = current_time - self._last_activity_time
-        
-        # If user is inactive for more than 5 minutes, reduce refresh rate
-        if time_since_last_activity > 300:  # 5 minutes
-            self._branches_auto_refresh_timer.setInterval(self._max_refresh_interval)
-        else:
-            # Calculate dynamic interval based on activity
-            dynamic_interval = min(
-                max(
-                    int(time_since_last_activity * 1000),  # Convert to milliseconds
-                    self._min_refresh_interval
-                ),
-                self._max_refresh_interval
-            )
-            self._branches_auto_refresh_timer.setInterval(dynamic_interval)
-        
-        # Perform refresh
-        self.branch_cache.invalidate('branches')
-        self.load_branches()
-        
-        if hasattr(self, 'status_bar'):
-            self.status_bar.showMessage("تم تحديث بيانات الفروع تلقائيًا.", 3000)
-        elif hasattr(self, 'statusBar') and callable(self.statusBar):
-            self.statusBar().showMessage("تم تحديث بيانات الفروع تلقائيًا.", 3000)
-            
     def _update_last_activity(self):
-        """Update last activity timestamp"""
+        """Update last activity timestamp and adjust refresh interval"""
         self._last_activity_time = time.time()
-        # Reset refresh interval to minimum when user is active
-        self._branches_auto_refresh_timer.setInterval(self._min_refresh_interval)
+        # Only reset refresh interval if significantly different from current
+        current_interval = self._branches_auto_refresh_timer.interval()
+        if abs(current_interval - self._min_refresh_interval) > 10000:  # 10 second difference
+            self._branches_auto_refresh_timer.setInterval(self._min_refresh_interval)
 
     def setup_branches_tab(self):
         """Set up the branches tab."""
