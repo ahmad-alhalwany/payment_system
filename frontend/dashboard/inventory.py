@@ -49,7 +49,7 @@ class InventoryTab(QWidget):
         self.update_pending = False
         
         # Cache for branch data
-        self.branch_cache = {}
+        self.branch_cache = None  # None تعني لم يتم الجلب بعد
         
         # Initialize summary labels
         self.tax_collected_label = QLabel("0")
@@ -154,10 +154,15 @@ class InventoryTab(QWidget):
         filter_button.clicked.connect(self._apply_filters)
         filter_layout.addWidget(filter_button)
         
-        # Refresh button
-        refresh_button = ModernButton("تحديث", color=Theme.ACCENT)
+        # Refresh data button (بيانات المخزون فقط)
+        refresh_button = ModernButton("تحديث البيانات", color=Theme.ACCENT)
         refresh_button.clicked.connect(self._refresh_data)
         filter_layout.addWidget(refresh_button)
+        
+        # Refresh branches button (تحديث الفروع فقط)
+        refresh_branches_button = ModernButton("تحديث الفروع", color=Theme.WARNING)
+        refresh_branches_button.clicked.connect(self.refresh_branches)
+        filter_layout.addWidget(refresh_branches_button)
         
         filter_group.setLayout(filter_layout)
         layout.addWidget(filter_group)
@@ -610,8 +615,11 @@ class InventoryTab(QWidget):
             
         return True
     
-    def load_branches(self):
-        """Load branches for the branch filter dropdown using QThread."""
+    def load_branches(self, force_reload=False):
+        """Load branches for the branch filter dropdown using QThread. استخدم الكاش إذا كان متاحاً إلا إذا طلب إعادة تحميل صريحة."""
+        if self.branch_cache is not None and not force_reload:
+            self._populate_branch_filter(self.branch_cache)
+            return
         try:
             if hasattr(self, 'status_label'):
                 self.status_label.setText("جاري تحميل الفروع...")
@@ -634,16 +642,8 @@ class InventoryTab(QWidget):
             if response.status_code == 200:
                 data = response.json()
                 branches = data.get("branches", [])
-                self.branch_filter.clear()
-                self.branch_filter.addItem("جميع الفروع", "all")
-                for branch in branches:
-                    if isinstance(branch, dict):
-                        branch_name = branch.get('name', '')
-                        branch_gov = branch.get('governorate', '')
-                        branch_id = branch.get('id')
-                        if branch_name and branch_id:
-                            display_text = f"{branch_name} - {branch_gov}" if branch_gov else branch_name
-                            self.branch_filter.addItem(display_text, branch_id)
+                self.branch_cache = branches  # تخزين الكاش
+                self._populate_branch_filter(branches)
                 if hasattr(self, 'status_label'):
                     self.status_label.setText("تم تحميل الفروع بنجاح")
             else:
@@ -655,11 +655,26 @@ class InventoryTab(QWidget):
         except Exception as e:
             self._handle_unexpected_error(e)
 
+    def _populate_branch_filter(self, branches):
+        self.branch_filter.clear()
+        self.branch_filter.addItem("جميع الفروع", "all")
+        for branch in branches:
+            if isinstance(branch, dict):
+                branch_name = branch.get('name', '')
+                branch_gov = branch.get('governorate', '')
+                branch_id = branch.get('id')
+                if branch_name and branch_id:
+                    display_text = f"{branch_name} - {branch_gov}" if branch_gov else branch_name
+                    self.branch_filter.addItem(display_text, branch_id)
+
+    def refresh_branches(self):
+        """Force reload branches from server and update filter."""
+        self.load_branches(force_reload=True)
+
     def _refresh_data(self):
-        """Refresh all data in the tab."""
+        """Refresh all data in the tab (بيانات المخزون فقط)."""
         try:
             self.status_label.setText("جاري تحديث البيانات...")
-            self.load_branches()
             self.load_data()
             self.status_label.setText("تم تحديث البيانات بنجاح")
         except Exception as e:
