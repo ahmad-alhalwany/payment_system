@@ -186,18 +186,37 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
         self.transactions_per_page = 15
         self.total_pages_transactions = 1
         self.api_client = APIClient(token)
-        self.current_zoom = 100  # Track current zoom level
+        self.current_zoom = 100
         self.full_name = full_name
+        
+        # Add smart loading variables
+        self._is_initial_load = True
+        self._current_tab = 0
+        self._data_cache = {
+            'basic_stats': {'data': None, 'timestamp': 0},
+            'branches': {'data': None, 'timestamp': 0},
+            'employees': {'data': None, 'timestamp': 0},
+            'transactions': {'data': None, 'timestamp': 0},
+            'financial': {'data': None, 'timestamp': 0},
+            'users': {'data': None, 'timestamp': 0},
+            'activity': {'data': None, 'timestamp': 0}
+        }
+        self.cache_duration = 300  # 5 minutes cache duration
+        
         # --- Add missing QLabel attributes for stats ---
         self.employees_count = QLabel("0")
         self.transactions_count = QLabel("0")
         self.amount_total = QLabel("0")
         self.branches_count = QLabel("0")
         
-        # Add timer for auto-refreshing transactions
-        self.transaction_timer = QTimer(self)
-        self.transaction_timer.timeout.connect(self.load_recent_transactions)
-        self.transaction_timer.start(120000)  # 5000 ms = 5 seconds
+        # Modify timer intervals and combine updates
+        self.update_timer = QTimer(self)
+        self.update_timer.timeout.connect(self.smart_update)
+        self.update_timer.start(300000)  # 5 minutes
+        
+        self.time_timer = QTimer(self)
+        self.time_timer.timeout.connect(self.update_time)
+        self.time_timer.start(60000)  # 1 minute
         
         self.setWindowTitle("لوحة تحكم المدير")
         self.setGeometry(100, 100, 1200, 800)
@@ -205,131 +224,182 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
         # Create menu bar
         self.create_menu_bar()
         
-        self.setStyleSheet("""
-            QMainWindow {
-                background-color: #f5f5f5;
-                font-family: Arial;
+        # Setup UI components
+        self.setup_ui_components()
+        
+        # Load basic data
+        self.load_basic_dashboard_data()
+        
+        # Connect tab change signal
+        self.tabs.currentChanged.connect(self.on_tab_changed)
+        
+    def smart_update(self):
+        """Smart update method that combines multiple updates and uses caching"""
+        try:
+            # Only update if the dashboard is visible
+            if not self.isVisible():
+                return
+                
+            current_time = time.time()
+            needs_update = False
+            
+            # Check which data needs updating
+            for key in self._data_cache:
+                if not self._is_cache_valid(key):
+                    needs_update = True
+                    break
+            
+            if not needs_update:
+                return
+                
+            # Update basic stats if needed
+            if not self._is_cache_valid('basic_stats'):
+                self.load_basic_dashboard_data()
+            
+            # Update current tab data
+            self.refresh_current_tab()
+            
+            # Update time display
+            self.update_time()
+            
+        except Exception as e:
+            print(f"Error in smart update: {e}")
+
+    def load_basic_dashboard_data(self):
+        """Load only essential dashboard data with combined requests"""
+        try:
+            headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
+            
+            # Combine multiple requests into one batch
+            stats = {}
+            
+            # Get all stats in parallel
+            responses = {
+                'branches': requests.get(f"{self.api_url}/branches/stats/", headers=headers),
+                'users': requests.get(f"{self.api_url}/users/stats/", headers=headers),
+                'financial': requests.get(f"{self.api_url}/financial/total/", headers=headers)
             }
-            QLabel {
-                color: #333;
-            }
-            QTabWidget::pane {
-                border: 1px solid #ccc;
-                border-radius: 8px;
-                background-color: rgba(255, 255, 255, 0.7);
-            }
-            QTabBar::tab {
-                background-color: #ddd;
-                padding: 10px 15px;
-                margin-right: 2px;
-                border-top-left-radius: 5px;
-                border-top-right-radius: 5px;
-                font-weight: bold;
-            }
-            QTabBar::tab:selected {
-                background-color: #2c3e50;
-                color: white;
-            }
-        """)
+            
+            # Process responses
+            for key, response in responses.items():
+                if response.status_code == 200:
+                    stats.update(response.json())
+            
+            # Get today's transactions
+            today = datetime.now().strftime("%Y-%m-%d")
+            trans_response = requests.get(f"{self.api_url}/transactions/stats/?date={today}", headers=headers)
+            if trans_response.status_code == 200:
+                stats.update(trans_response.json())
+            
+            # Update cache and UI
+            self._update_cache('basic_stats', stats)
+            self.update_basic_stats(stats)
+            
+            # Load basic branch list for filters
+            self.load_basic_branches()
+            
+        except Exception as e:
+            print(f"Error loading basic dashboard data: {e}")
+            self.statusBar().showMessage(f"خطأ في تحميل البيانات الأساسية: {str(e)}", 5000)
+
+    def refresh_current_tab(self):
+        """Refresh data for current tab with smart caching"""
+        try:
+            if self._current_tab == 0:  # Dashboard
+                if not self._is_cache_valid('activity'):
+                    self.load_recent_activity()
+                if not self._is_cache_valid('financial'):
+                    self.load_financial_status()
+                if not self._is_cache_valid('branches'):
+                    self.load_branch_status()
+            elif self._current_tab == 1:  # Branches
+                if not self._is_cache_valid('branches'):
+                    self.load_branches()
+            elif self._current_tab == 2:  # Employees
+                if not self._is_cache_valid('users'):
+                    self.load_employees()
+            elif self._current_tab == 3:  # Transactions
+                if not self._is_cache_valid('transactions'):
+                    self.load_transactions()
+        except Exception as e:
+            print(f"Error refreshing current tab: {e}")
+
+    def load_basic_branches(self):
+        """Load only essential branch data for filters with caching"""
+        try:
+            # Check cache first
+            cached_branches = self._get_cached_data('branches')
+            if cached_branches:
+                self.update_branch_filters(cached_branches)
+                return
+                
+            headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
+            response = requests.get(f"{self.api_url}/branches/", headers=headers)
+            if response.status_code == 200:
+                branches_data = response.json()
+                if isinstance(branches_data, dict):
+                    branches = branches_data.get("branches", [])
+                    self._update_cache('branches', branches_data)  # Store the complete response
+                    self.update_branch_filters(branches_data)
+        except Exception as e:
+            print(f"Error loading basic branches: {e}")
+
+    def update_time(self):
+        """Update time display"""
+        try:
+            current_time = datetime.now().strftime("%I:%M %p")
+            current_date = datetime.now().strftime("%Y/%m/%d")
+            if hasattr(self, 'time_label'):
+                self.time_label.setText(f"{current_time} - {current_date}")
+        except Exception as e:
+            print(f"Error updating time: {e}")
+
+    def closeEvent(self, event):
+        """Clean up timers and resources when closing."""
+        # Stop all timers
+        if hasattr(self, 'update_timer'):
+            self.update_timer.stop()
+        if hasattr(self, 'time_timer'):
+            self.time_timer.stop()
         
-        # Central widget
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-        
-        # Main layout
-        main_layout = QVBoxLayout(central_widget)
-        
-        # Header
-        header_layout = QHBoxLayout()
-        
-        # Logo/Title
-        logo_label = QLabel("نظام التحويلات المالية")
-        logo_label.setFont(QFont("Arial", 20, QFont.Weight.Bold))
-        logo_label.setStyleSheet("color: #2c3e50;")
-        header_layout.addWidget(logo_label)
-        
-        # Spacer
-        header_layout.addStretch()
-        
-        # User info
-        user_info = QLabel("مدير النظام")
-        user_info.setFont(QFont("Arial", 12))
-        user_info.setStyleSheet("color: #7f8c8d;")
-        header_layout.addWidget(user_info)
-        
-        main_layout.addLayout(header_layout)
-        
-        # Tab widget
-        self.tabs = QTabWidget()
-        
-        # Dashboard tab
-        self.dashboard_tab = QWidget()
-        self.setup_dashboard_tab()
-        self.tabs.addTab(self.dashboard_tab, "لوحة المعلومات")
-        
-        # Branches tab
-        self.branches_tab = QWidget()
-        self.setup_branches_tab()
-        self.tabs.addTab(self.branches_tab, "الفروع")
-        
-        # Employees tab
-        self.employees_tab = QWidget()
-        self.setup_employees_tab()
-        self.tabs.addTab(self.employees_tab, "الموظفين")
-        
-        # Transactions tab
-        self.transactions_tab = QWidget()
-        self.setup_transactions_tab()
-        self.tabs.addTab(self.transactions_tab, "التحويلات")
-        
-        # Admin Money Transfer tab
-        self.admin_transfer_tab = QWidget()
-        self.setup_admin_transfer_tab()
-        self.tabs.addTab(self.admin_transfer_tab, "تحويل الأموال")
-        
-        # Reports tab
-        self.reports_tab = QWidget()
-        self.setup_reports_tab()
-        self.tabs.addTab(self.reports_tab, "التقارير")
-        
-        # Inventory tab (new)
-        self.inventory_tab = QWidget()
-        self.setup_inventory_tab()
-        self.tabs.addTab(self.inventory_tab, "المخزون")
-        
-        # Settings tab
-        self.settings_tab = QWidget()
-        self.setup_settings_tab()
-        self.tabs.addTab(self.settings_tab, "الإعدادات")
-        
-        main_layout.addWidget(self.tabs)
-        
-        # Status bar
-        self.status_bar = QStatusBar()
-        self.setStatusBar(self.status_bar)
-        self.status_bar.showMessage("جاهز")
-        
-        # Load initial data
-        self.load_dashboard_data()
-        self.load_branches()
-        self.load_employees()
-        self.load_transactions()
-        
-        # Load branch filters for all tabs at once
-        self.load_branches_for_filter()
-        
-        # Initialize branch_id_to_name mapping if not already done
-        if not hasattr(self, 'branch_id_to_name'):
-            self.branch_id_to_name = {}
-        
-        # Set up timers for automatic refresh
-        self.branch_timer = QTimer()
-        self.branch_timer.timeout.connect(self.refresh_branches)
-        self.branch_timer.start(30000)  # Refresh every 5 seconds
-        
-        # Initialize chart manager
-        self.chart_manager = ChartManager(self)
-        
+        # Accept the close event
+        event.accept()
+
+    def _get_cached_data(self, cache_key):
+        """Get data from cache if valid"""
+        try:
+            cache = self._data_cache.get(cache_key)
+            if cache and self._is_cache_valid(cache_key):
+                return cache['data']
+            return None
+        except Exception as e:
+            print(f"Error getting cached data for {cache_key}: {e}")
+            return None
+
+    def _update_cache(self, cache_key, data):
+        """Update cache with new data"""
+        try:
+            if data is not None:
+                self._data_cache[cache_key] = {
+                    'data': data,
+                    'timestamp': time.time()
+                }
+        except Exception as e:
+            print(f"Error updating cache for {cache_key}: {e}")
+
+    def _clear_cache(self, cache_key=None):
+        """Clear specific cache or all caches."""
+        if cache_key:
+            self._data_cache[cache_key] = {'data': None, 'timestamp': 0}
+        else:
+            for key in self._data_cache:
+                self._data_cache[key] = {'data': None, 'timestamp': 0}
+
+    def _is_cache_valid(self, cache_key):
+        """Check if cache is still valid."""
+        cache = self._data_cache.get(cache_key)
+        return cache and time.time() - cache['timestamp'] < self.cache_duration
+
     def setup_admin_transfer_tab(self):
         """Set up the admin money transfer tab with unrestricted capabilities."""
         layout = QVBoxLayout()
@@ -383,8 +453,20 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
         welcome_text = QLabel(f"مرحباً، {self.full_name}")
         welcome_text.setStyleSheet("font-size: 24px; font-weight: bold; color: #2c3e50; margin-bottom: 5px;")
         
+        # Add refresh button
+        refresh_button = ModernButton("تحديث البيانات", color="#3498db")
+        refresh_button.clicked.connect(self.manual_refresh)
+        refresh_button.setStyleSheet("""
+            QPushButton {
+                padding: 8px 15px;
+                border-radius: 5px;
+                font-size: 14px;
+            }
+        """)
+        
         welcome_layout_inner.addWidget(welcome_text)
         welcome_layout_inner.addWidget(time_label)
+        welcome_layout_inner.addWidget(refresh_button)
         welcome_group.setLayout(welcome_layout_inner)
         welcome_layout.addWidget(welcome_group, stretch=2)
         
@@ -580,8 +662,23 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
         self.refresh_timer.start(30000)  # Refresh every 30 seconds
         
         self.dashboard_tab.setLayout(layout)
-        self.refresh_dashboard()
         
+    def manual_refresh(self):
+        """Manually refresh all dashboard data."""
+        try:
+            # Clear all caches
+            self._clear_cache()
+            
+            # Reload all data
+            self.load_dashboard_data()
+            self.load_branches()
+            self.load_employees()
+            self.load_transactions()
+            
+            self.statusBar().showMessage("تم تحديث البيانات بنجاح", 3000)
+        except Exception as e:
+            self.statusBar().showMessage(f"خطأ في تحديث البيانات: {str(e)}", 5000)
+    
     def refresh_dashboard(self):
         """Refresh all dashboard data."""
         try:
@@ -912,37 +1009,56 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
         self.transactions_tab.setLayout(layout)
     
     def load_dashboard_data(self):
-        """Load data for the dashboard."""
+        """Load data for the dashboard with caching."""
         try:
             headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
             
-            # Load all dashboard components
-            self.load_branch_stats()  # This now updates branches count
+            # Load branch stats with caching
+            cached_branches = self._get_cached_data('branches')
+            if not cached_branches:
+                response = requests.get(f"{self.api_url}/branches/stats/", headers=headers)
+                if response.status_code == 200:
+                    cached_branches = response.json()
+                    self._update_cache('branches', cached_branches)
+            self.load_branch_stats()
             
-            # Get employee stats
-            response = requests.get(f"{self.api_url}/users/stats/", headers=headers)
-            if response.status_code == 200:
-                data = response.json()
-                self.employees_count.setText(str(data.get("total", 0)))
+            # Get employee stats with caching
+            cached_users = self._get_cached_data('users')
+            if not cached_users:
+                response = requests.get(f"{self.api_url}/users/stats/", headers=headers)
+                if response.status_code == 200:
+                    cached_users = response.json()
+                    self._update_cache('users', cached_users)
+            self.employees_count.setText(str(cached_users.get("total", 0)))
             
-            # Get transaction stats
-            response = requests.get(f"{self.api_url}/transactions/stats/", headers=headers)
-            if response.status_code == 200:
-                data = response.json()
-                self.transactions_count.setText(str(data.get("total", 0)))
-                self.amount_total.setText(f"{data.get('total_amount', 0):,.2f}")
+            # Get transaction stats with caching
+            cached_transactions = self._get_cached_data('transactions')
+            if not cached_transactions:
+                response = requests.get(f"{self.api_url}/transactions/stats/", headers=headers)
+                if response.status_code == 200:
+                    cached_transactions = response.json()
+                    self._update_cache('transactions', cached_transactions)
+            self.transactions_count.setText(str(cached_transactions.get("total", 0)))
+            self.amount_total.setText(f"{cached_transactions.get('total_amount', 0):,.2f}")
             
-            # Load recent transactions
-            self.load_recent_transactions()
+            # Load recent transactions only if needed
+            if self.tabs.currentIndex() == 0:  # Only load if on dashboard tab
+                self.load_recent_transactions()
             
         except Exception as e:
             print(f"Error loading dashboard data: {e}")
             QMessageBox.warning(self, "خطأ", f"تعذر تحميل بيانات لوحة المعلومات: {str(e)}")
     
     def load_recent_transactions(self):
-        """Load recent transactions with optimized table updates"""
+        """Load recent transactions with optimized table updates and caching"""
         try:
             self.statusBar().showMessage("جاري تحميل التحويلات...")
+            
+            # Check cache first
+            cached_transactions = self._get_cached_data('transactions')
+            if cached_transactions:
+                self.update_transactions_table({'transactions': cached_transactions})
+                return
             
             # Initialize table update manager if not exists
             if not hasattr(self, 'table_manager'):
@@ -950,13 +1066,24 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
             
             # Create and start data loading thread
             self.load_thread = DataLoadThread(self.api_url, self.token)
-            self.load_thread.data_loaded.connect(self.update_transactions_table)
+            self.load_thread.data_loaded.connect(self._handle_transactions_data)
             self.load_thread.error_occurred.connect(lambda msg: self.statusBar().showMessage(msg, 5000))
             self.load_thread.progress_updated.connect(lambda msg: self.statusBar().showMessage(msg))
             self.load_thread.start()
             
         except Exception as e:
             self.statusBar().showMessage(f"خطأ في تحميل البيانات: {str(e)}", 5000)
+
+    def _handle_transactions_data(self, data):
+        """Handle loaded transactions data and update cache"""
+        try:
+            transactions = data.get("transactions", [])
+            # Update cache
+            self._update_cache('transactions', transactions)
+            # Update table
+            self.update_transactions_table(data)
+        except Exception as e:
+            self.statusBar().showMessage(f"خطأ في معالجة البيانات: {str(e)}", 5000)
 
     def update_transactions_table(self, data):
         """Update transactions table with the loaded data"""
@@ -1814,3 +1941,501 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
             item = QTableWidgetItem("غير معروف")
             item.setForeground(QColor(127, 140, 141))  # رمادي
         return item
+
+    def load_branches_for_filter(self):
+        """Load branches for filter dropdowns with caching"""
+        try:
+            # Check cache first
+            cached_branches = self._get_cached_data('branches')
+            if not cached_branches:
+                headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
+                response = requests.get(f"{self.api_url}/branches/", headers=headers)
+                if response.status_code == 200:
+                    cached_branches = response.json()
+                    self._update_cache('branches', cached_branches)
+                else:
+                    return
+
+            branches = cached_branches.get("branches", [])
+            
+            # Update branch filter if it exists
+            if hasattr(self, 'branch_filter'):
+                self.branch_filter.clear()
+                self.branch_filter.addItem("الكل", None)
+            
+            # Update transaction branch filter if it exists
+            if hasattr(self, 'transaction_branch_filter'):
+                self.transaction_branch_filter.clear()
+                self.transaction_branch_filter.addItem("الكل", None)
+            
+            for branch in branches:
+                if isinstance(branch, dict):
+                    branch_id = branch.get("id")
+                    branch_name = branch.get("name", "")
+                    
+                    if branch_id is not None and branch_name:
+                        if hasattr(self, 'branch_filter'):
+                            self.branch_filter.addItem(branch_name, branch_id)
+                        
+                        if hasattr(self, 'transaction_branch_filter'):
+                            self.transaction_branch_filter.addItem(branch_name, branch_id)
+                
+        except Exception as e:
+            print(f"Error loading branches for filter: {e}")
+
+    def setup_ui_components(self):
+        """Setup basic UI components"""
+        # Central widget
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        
+        # Main layout
+        main_layout = QVBoxLayout(central_widget)
+        
+        # Header
+        header_layout = QHBoxLayout()
+        
+        # Logo/Title
+        logo_label = QLabel("نظام التحويلات المالية")
+        logo_label.setFont(QFont("Arial", 20, QFont.Weight.Bold))
+        logo_label.setStyleSheet("color: #2c3e50;")
+        header_layout.addWidget(logo_label)
+        
+        # Spacer
+        header_layout.addStretch()
+        
+        # User info
+        user_info = QLabel("مدير النظام")
+        user_info.setFont(QFont("Arial", 12))
+        user_info.setStyleSheet("color: #7f8c8d;")
+        header_layout.addWidget(user_info)
+        
+        main_layout.addLayout(header_layout)
+        
+        # Tab widget
+        self.tabs = QTabWidget()
+        
+        # Initialize all tabs
+        self.initialize_tabs()
+        
+        main_layout.addWidget(self.tabs)
+        
+        # Status bar
+        self.status_bar = QStatusBar()
+        self.setStatusBar(self.status_bar)
+        self.status_bar.showMessage("جاهز")
+        
+        # Initialize branch_id_to_name mapping
+        if not hasattr(self, 'branch_id_to_name'):
+            self.branch_id_to_name = {}
+        
+        # Initialize chart manager
+        self.chart_manager = ChartManager(self)
+
+    def initialize_tabs(self):
+        """Initialize all tabs without loading their data"""
+        # Dashboard tab
+        self.dashboard_tab = QWidget()
+        self.setup_dashboard_tab()
+        self.tabs.addTab(self.dashboard_tab, "لوحة المعلومات")
+        
+        # Branches tab
+        self.branches_tab = QWidget()
+        self.setup_branches_tab()
+        self.tabs.addTab(self.branches_tab, "الفروع")
+        
+        # Employees tab - Initialize UI only
+        self.employees_tab = QWidget()
+        self.setup_employees_tab_ui()
+        self.tabs.addTab(self.employees_tab, "الموظفين")
+        
+        # Transactions tab
+        self.transactions_tab = QWidget()
+        self.setup_transactions_tab()
+        self.tabs.addTab(self.transactions_tab, "التحويلات")
+        
+        # Admin Money Transfer tab
+        self.admin_transfer_tab = QWidget()
+        self.setup_admin_transfer_tab()
+        self.tabs.addTab(self.admin_transfer_tab, "تحويل الأموال")
+        
+        # Reports tab - Initialize UI only
+        self.reports_tab = QWidget()
+        self.setup_reports_tab_ui()
+        self.tabs.addTab(self.reports_tab, "التقارير")
+        
+        # Inventory tab - Initialize UI only
+        self.inventory_tab = QWidget()
+        self.setup_inventory_tab_ui()
+        self.tabs.addTab(self.inventory_tab, "المخزون")
+        
+        # Settings tab
+        self.settings_tab = QWidget()
+        self.setup_settings_tab()
+        self.tabs.addTab(self.settings_tab, "الإعدادات")
+
+    def setup_employees_tab_ui(self):
+        """Set up the employees tab UI without loading data"""
+        layout = QVBoxLayout()
+        
+        # Title
+        title = QLabel("إدارة الموظفين")
+        title.setFont(QFont("Arial", 18, QFont.Weight.Bold))
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setStyleSheet("color: #2c3e50; margin-bottom: 20px;")
+        layout.addWidget(title)
+        
+        # Filter controls
+        filter_group = ModernGroupBox("تصفية الموظفين", "#3498db")
+        filter_layout = QGridLayout()
+        
+        # Branch filter
+        branch_label = QLabel("الفرع:")
+        self.branch_filter = QComboBox()
+        self.branch_filter.setMinimumWidth(250)
+        self.branch_filter.currentIndexChanged.connect(self.filter_employees)
+        
+        # Search field
+        search_label = QLabel("بحث:")
+        self.employee_search = QLineEdit()
+        self.employee_search.setPlaceholderText("ابحث باسم الموظف أو المعرف")
+        self.employee_search.textChanged.connect(self.filter_employees)
+        
+        # Add widgets to filter layout
+        filter_layout.addWidget(branch_label, 0, 0)
+        filter_layout.addWidget(self.branch_filter, 0, 1)
+        filter_layout.addWidget(search_label, 1, 0)
+        filter_layout.addWidget(self.employee_search, 1, 1)
+        
+        filter_group.setLayout(filter_layout)
+        layout.addWidget(filter_group)
+        
+        # Employees table
+        self.employees_table = QTableWidget()
+        self.employees_table.setColumnCount(5)
+        self.employees_table.setHorizontalHeaderLabels([
+            "اسم المستخدم", "الدور", "الفرع", "تاريخ الإنشاء", "الحالة"
+        ])
+        self.employees_table.horizontalHeader().setStretchLastSection(True)
+        self.employees_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.employees_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.employees_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        
+        layout.addWidget(self.employees_table)
+        
+        # Buttons
+        buttons_layout = QHBoxLayout()
+        
+        add_employee_button = ModernButton("إضافة موظف", color="#2ecc71")
+        add_employee_button.clicked.connect(self.add_employee)
+        buttons_layout.addWidget(add_employee_button)
+        
+        edit_employee_button = ModernButton("تعديل الموظف", color="#3498db")
+        edit_employee_button.clicked.connect(self.edit_employee)
+        buttons_layout.addWidget(edit_employee_button)
+        
+        delete_employee_button = ModernButton("حذف الموظف", color="#e74c3c")
+        delete_employee_button.clicked.connect(self.delete_employee)
+        buttons_layout.addWidget(delete_employee_button)
+        
+        reset_password_button = ModernButton("إعادة تعيين كلمة المرور", color="#f39c12")
+        reset_password_button.clicked.connect(self.reset_password)
+        buttons_layout.addWidget(reset_password_button)
+        
+        refresh_button = ModernButton("تحديث", color="#9b59b6")
+        refresh_button.clicked.connect(self.load_employees)
+        buttons_layout.addWidget(refresh_button)
+        
+        layout.addLayout(buttons_layout)
+        
+        self.employees_tab.setLayout(layout)
+
+    def setup_reports_tab_ui(self):
+        """Set up the reports tab UI without loading data"""
+        layout = QVBoxLayout()
+        
+        # Title
+        title = QLabel("التقارير")
+        title.setFont(QFont("Arial", 18, QFont.Weight.Bold))
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setStyleSheet("color: #2c3e50; margin-bottom: 20px;")
+        layout.addWidget(title)
+        
+        # Add loading indicator
+        self.reports_loading = QLabel("جاري تحميل التقارير...")
+        self.reports_loading.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.reports_loading.setVisible(False)
+        layout.addWidget(self.reports_loading)
+        
+        # Add placeholder for reports content
+        self.reports_content = QWidget()
+        layout.addWidget(self.reports_content)
+        
+        self.reports_tab.setLayout(layout)
+
+    def setup_inventory_tab_ui(self):
+        """Set up the inventory tab UI without loading data"""
+        layout = QVBoxLayout()
+        
+        # Title
+        title = QLabel("المخزون")
+        title.setFont(QFont("Arial", 18, QFont.Weight.Bold))
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setStyleSheet("color: #2c3e50; margin-bottom: 20px;")
+        layout.addWidget(title)
+        
+        # Add loading indicator
+        self.inventory_loading = QLabel("جاري تحميل بيانات المخزون...")
+        self.inventory_loading.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.inventory_loading.setVisible(False)
+        layout.addWidget(self.inventory_loading)
+        
+        # Add placeholder for inventory content
+        self.inventory_content = QWidget()
+        layout.addWidget(self.inventory_content)
+        
+        self.inventory_tab.setLayout(layout)
+
+    def on_tab_changed(self, index):
+        """Handle tab change and load necessary data"""
+        if index == self._current_tab:
+            return
+            
+        self._current_tab = index
+        
+        # Load tab specific data
+        if index == 0:  # Dashboard
+            self.load_dashboard_details()
+        elif index == 1:  # Branches
+            self.load_branches_details()
+        elif index == 2:  # Employees
+            self.load_employees_details()
+        elif index == 3:  # Transactions
+            self.load_transactions_details()
+        elif index == 4:  # Money Transfer
+            self.load_money_transfer_details()
+        elif index == 5:  # Reports
+            self.load_reports_details()
+        elif index == 6:  # Inventory
+            self.load_inventory_details()
+        elif index == 7:  # Settings
+            self.load_settings_details()
+
+    def setup_auto_refresh(self):
+        """Setup automatic refresh timers"""
+        # Basic stats refresh every 5 minutes
+        self.basic_refresh_timer = QTimer()
+        self.basic_refresh_timer.timeout.connect(self.load_basic_dashboard_data)
+        self.basic_refresh_timer.start(300000)  # 5 minutes
+        
+        # Current tab refresh every minute
+        self.tab_refresh_timer = QTimer()
+        self.tab_refresh_timer.timeout.connect(self.refresh_current_tab)
+        self.tab_refresh_timer.start(60000)  # 1 minute
+
+    def update_basic_stats(self, stats):
+        """Update basic statistics display"""
+        try:
+            self.employees_count.setText(str(stats.get("total_employees", 0)))
+            self.transactions_count.setText(str(stats.get("total_transactions", 0)))
+            self.amount_total.setText(f"{stats.get('total_amount', 0):,.2f}")
+            self.branches_count.setText(str(stats.get("total_branches", 0)))
+        except Exception as e:
+            print(f"Error updating basic stats: {e}")
+
+    def update_branch_filters(self, branches):
+        """Update branch filters with basic branch data"""
+        try:
+            # Ensure branches is a list
+            if isinstance(branches, dict):
+                branches = branches.get("branches", [])
+            elif not isinstance(branches, list):
+                print(f"Invalid branches data type: {type(branches)}")
+                return
+
+            # Update branch filter if it exists
+            if hasattr(self, 'branch_filter'):
+                self.branch_filter.clear()
+                self.branch_filter.addItem("الكل", None)
+            
+            # Update transaction branch filter if it exists
+            if hasattr(self, 'transaction_branch_filter'):
+                self.transaction_branch_filter.clear()
+                self.transaction_branch_filter.addItem("الكل", None)
+            
+            # Add branches to filters
+            for branch in branches:
+                if isinstance(branch, dict):
+                    branch_id = branch.get("id")
+                    branch_name = branch.get("name", "")
+                    
+                    if branch_id is not None and branch_name:
+                        if hasattr(self, 'branch_filter'):
+                            self.branch_filter.addItem(branch_name, branch_id)
+                        
+                        if hasattr(self, 'transaction_branch_filter'):
+                            self.transaction_branch_filter.addItem(branch_name, branch_id)
+                
+        except Exception as e:
+            print(f"Error updating branch filters: {e}")
+
+    def load_dashboard_details(self):
+        """Load detailed dashboard data"""
+        try:
+            if not self._is_cache_valid('basic_stats'):
+                self.load_basic_dashboard_data()
+            self.load_recent_activity()
+            self.load_financial_status()
+            self.load_branch_status()
+        except Exception as e:
+            print(f"Error loading dashboard details: {e}")
+
+    def load_branches_details(self):
+        """Load detailed branch data"""
+        try:
+            if not self._is_cache_valid('branches'):
+                self.load_branches()
+            self.load_branch_stats()
+        except Exception as e:
+            print(f"Error loading branch details: {e}")
+
+    def load_employees_details(self):
+        """Load detailed employee data"""
+        try:
+            # Show loading indicator
+            if hasattr(self, 'employees_table'):
+                self.employees_table.setRowCount(0)
+                self.employees_table.setRowCount(1)
+                loading_item = QTableWidgetItem("جاري تحميل البيانات...")
+                loading_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.employees_table.setItem(0, 0, loading_item)
+                self.employees_table.setSpan(0, 0, 1, 5)
+            
+            # Load data if not in cache or cache is invalid
+            if not self._is_cache_valid('employees'):
+                self.load_employees()
+            
+            # Load branch filter data
+            self.load_branches_for_filter()
+            
+        except Exception as e:
+            print(f"Error loading employee details: {e}")
+
+    def load_transactions_details(self):
+        """Load detailed transaction data"""
+        try:
+            if not self._is_cache_valid('transactions'):
+                self.load_transactions()
+            self.load_transaction_stats()
+        except Exception as e:
+            print(f"Error loading transaction details: {e}")
+
+    def load_money_transfer_details(self):
+        """Load money transfer tab data"""
+        try:
+            if hasattr(self, 'admin_transfer_widget'):
+                self.admin_transfer_widget.load_branches()
+        except Exception as e:
+            print(f"Error loading money transfer details: {e}")
+
+    def load_reports_details(self):
+        """Load reports tab data"""
+        try:
+            # Show loading indicator
+            if hasattr(self, 'reports_loading'):
+                self.reports_loading.setVisible(True)
+            
+            # Initialize report handler if not exists
+            if not hasattr(self, 'report_handler'):
+                self.report_handler = ReportHandlerMixin()
+                self.report_handler.setup_ui(self.reports_content)
+            
+            # Load reports
+            self.report_handler.load_reports()
+            
+            # Hide loading indicator
+            if hasattr(self, 'reports_loading'):
+                self.reports_loading.setVisible(False)
+            
+        except Exception as e:
+            print(f"Error loading reports details: {e}")
+
+    def load_inventory_details(self):
+        """Load inventory tab data"""
+        try:
+            # Show loading indicator
+            if hasattr(self, 'inventory_loading'):
+                self.inventory_loading.setVisible(True)
+            
+            # Initialize inventory widget if not exists
+            if not hasattr(self, 'inventory_widget'):
+                self.inventory_widget = InventoryTab(token=self.token, parent=self)
+                self.inventory_content.layout().addWidget(self.inventory_widget)
+            
+            # Load inventory data
+            self.inventory_widget.load_inventory()
+            
+            # Hide loading indicator
+            if hasattr(self, 'inventory_loading'):
+                self.inventory_loading.setVisible(False)
+            
+        except Exception as e:
+            print(f"Error loading inventory details: {e}")
+
+    def load_settings_details(self):
+        """Load settings tab data"""
+        try:
+            if hasattr(self, 'settings_handler'):
+                self.settings_handler.load_settings()
+        except Exception as e:
+            print(f"Error loading settings details: {e}")
+
+    def _is_cache_valid(self, cache_key):
+        """Check if cached data is still valid"""
+        cache = self._data_cache.get(cache_key)
+        if not cache:
+            return False
+        return time.time() - cache['timestamp'] < self.cache_duration
+
+    def _update_cache(self, cache_key, data):
+        """Update cache with new data"""
+        self._data_cache[cache_key] = {
+            'data': data,
+            'timestamp': time.time()
+        }
+
+    def _get_cached_data(self, cache_key):
+        """Get data from cache if valid"""
+        cache = self._data_cache.get(cache_key)
+        if cache and self._is_cache_valid(cache_key):
+            return cache['data']
+        return None
+
+    def load_employee_stats(self):
+        """Load employee statistics"""
+        try:
+            headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
+            response = requests.get(f"{self.api_url}/users/stats/", headers=headers)
+            if response.status_code == 200:
+                stats = response.json()
+                self._update_cache('users', stats)
+                # Update employee count if needed
+                if hasattr(self, 'employees_count'):
+                    self.employees_count.setText(str(stats.get("total", 0)))
+        except Exception as e:
+            print(f"Error loading employee stats: {e}")
+
+    def load_transaction_stats(self):
+        """Load transaction statistics"""
+        try:
+            headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
+            today = datetime.now().strftime("%Y-%m-%d")
+            response = requests.get(f"{self.api_url}/transactions/stats/?date={today}", headers=headers)
+            if response.status_code == 200:
+                stats = response.json()
+                self._update_cache('transactions', stats)
+                # Update transaction count if needed
+                if hasattr(self, 'transactions_count'):
+                    self.transactions_count.setText(str(stats.get("total", 0)))
+        except Exception as e:
+            print(f"Error loading transaction stats: {e}")
