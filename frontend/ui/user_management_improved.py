@@ -482,154 +482,154 @@ class AddEmployeeDialog(QDialog):
         self.api_url = os.environ["API_URL"] 
         self.current_user_id = current_user_id
         self.setWindowTitle("إضافة موظف جديد")
-        self.setGeometry(250, 250, 450, 500)
+        self.setGeometry(250, 250, 400, 450)  # Reduced size
         self.setStyleSheet("""
-            QWidget {
+            QDialog {
                 background-color: #f8f9fa;
-                font-family: Arial;
+                font-family: 'Segoe UI', Arial;
             }
             QLabel {
-                color: #333;
-                font-size: 14px;
-                margin-top: 5px;
+                color: #2c3e50;
+                font-size: 13px;
+                margin-top: 3px;
             }
             QPushButton {
                 background-color: #3498db;
                 color: white;
-                border-radius: 8px;
-                padding: 10px;
+                border-radius: 6px;
+                padding: 8px;
                 font-weight: bold;
                 border: none;
+                font-size: 13px;
             }
             QPushButton:hover {
                 background-color: #2980b9;
             }
             QLineEdit, QComboBox {
                 border: 1px solid #ddd;
-                border-radius: 8px;
-                padding: 12px;
+                border-radius: 6px;
+                padding: 8px;
                 background-color: white;
-                font-size: 14px;
-                margin-bottom: 5px;
+                font-size: 13px;
+                margin-bottom: 3px;
+                min-height: 20px;
+            }
+            QLineEdit:focus, QComboBox:focus {
+                border: 2px solid #3498db;
             }
         """)
 
         self.is_admin = is_admin
         self.branch_id = branch_id
-        self.token = token  # Store the token
+        self.token = token
 
         layout = QVBoxLayout()
-        layout.setSpacing(10)
-        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(8)  # Reduced spacing
+        layout.setContentsMargins(15, 15, 15, 15)  # Reduced margins
 
-        # Title with card-like design
+        # Title with modern design
         title_container = QWidget()
         title_container.setStyleSheet("""
             QWidget {
-                background-color: white;
-                border-radius: 12px;
-                border: 1px solid #e6e6e6;
-                padding: 10px;
+                background-color: #3498db;
+                border-radius: 8px;
+                padding: 8px;
             }
         """)
         title_layout = QVBoxLayout(title_container)
         
         title = QLabel("إضافة موظف جديد")
-        title.setFont(QFont("Arial", 18, QFont.Weight.Bold))
+        title.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title.setStyleSheet("color: #2c3e50; margin: 5px 0;")
+        title.setStyleSheet("color: white; margin: 2px 0;")
         title_layout.addWidget(title)
         
-        subtitle = QLabel("أدخل معلومات الموظف الجديد")
-        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        subtitle.setStyleSheet("color: #7f8c8d; font-size: 14px;")
-        title_layout.addWidget(subtitle)
-        
         layout.addWidget(title_container)
-        layout.addSpacing(15)
+        layout.addSpacing(10)
 
-        # Form with card-like design
+        # Form with modern design
         form_container = QWidget()
         form_container.setStyleSheet("""
             QWidget {
                 background-color: white;
-                border-radius: 12px;
+                border-radius: 8px;
                 border: 1px solid #e6e6e6;
-                padding: 15px;
+                padding: 12px;
             }
         """)
         form_layout = QVBoxLayout(form_container)
-        form_layout.setSpacing(12)
+        form_layout.setSpacing(8)
 
-        # Employee name
-        name_label = QLabel("👤 اسم الموظف:")
-        name_label.setStyleSheet("font-weight: bold;")
-        form_layout.addWidget(name_label)
-        
+        # Employee name with icon
+        name_label = QLabel("👤 اسم الموظف")
+        name_label.setStyleSheet("font-weight: bold; color: #2c3e50;")
         self.name_input = QLineEdit()
         self.name_input.setPlaceholderText("أدخل اسم الموظف")
+        form_layout.addWidget(name_label)
         form_layout.addWidget(self.name_input)
-        form_layout.addSpacing(5)
 
-        # Password
-        password_label = QLabel("🔑 كلمة المرور:")
-        password_label.setStyleSheet("font-weight: bold;")
-        form_layout.addWidget(password_label)
-        
+        # Password with icon
+        password_label = QLabel("🔑 كلمة المرور")
+        password_label.setStyleSheet("font-weight: bold; color: #2c3e50;")
         self.password_input = QLineEdit()
         self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
         self.password_input.setPlaceholderText("أدخل كلمة المرور")
+        form_layout.addWidget(password_label)
         form_layout.addWidget(self.password_input)
-        form_layout.addSpacing(5)
 
-        # Role
-        role_label = QLabel("💼 الوظيفة:")
-        role_label.setStyleSheet("font-weight: bold;")
-        form_layout.addWidget(role_label)
-        
+        # Role with icon
+        role_label = QLabel("💼 الوظيفة")
+        role_label.setStyleSheet("font-weight: bold; color: #2c3e50;")
         self.role_input = QComboBox()
         if self.is_admin:
             self.role_input.addItems(["مدير فرع", "موظف تحويلات"])
         else:
             self.role_input.addItems(["موظف تحويلات"])
             self.role_input.setEnabled(False)
+        form_layout.addWidget(role_label)
         form_layout.addWidget(self.role_input)
-        form_layout.addSpacing(5)
 
-        # Branch
-        branch_label = QLabel("🏢 الفرع:")
-        branch_label.setStyleSheet("font-weight: bold;")
-        form_layout.addWidget(branch_label)
-        
+        # Branch with icon
+        branch_label = QLabel("🏢 الفرع")
+        branch_label.setStyleSheet("font-weight: bold; color: #2c3e50;")
         self.branch_input = QComboBox()
+        form_layout.addWidget(branch_label)
         form_layout.addWidget(self.branch_input)
         
         layout.addWidget(form_container)
-        layout.addSpacing(15)
+        layout.addSpacing(10)
 
-        # Save button
+        # Save button with modern design
         self.save_button = QPushButton("✅ حفظ")
         self.save_button.clicked.connect(self.save_employee)
         self.save_button.setStyleSheet("""
             QPushButton {
                 background-color: #27ae60;
                 color: white;
-                border-radius: 8px;
-                padding: 12px;
+                border-radius: 6px;
+                padding: 10px;
                 font-weight: bold;
-                font-size: 15px;
-                min-height: 50px;
+                font-size: 14px;
+                min-height: 40px;
             }
             QPushButton:hover {
                 background-color: #2ecc71;
             }
+            QPushButton:disabled {
+                background-color: #95a5a6;
+            }
         """)
         layout.addWidget(self.save_button)
 
-        # Add loading indicator
+        # Loading indicator with modern design
         self.loading_label = QLabel("جاري الحفظ...")
         self.loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.loading_label.setStyleSheet("color: #3498db; font-weight: bold;")
+        self.loading_label.setStyleSheet("""
+            color: #3498db;
+            font-weight: bold;
+            font-size: 13px;
+            padding: 5px;
+        """)
         self.loading_label.hide()
         layout.addWidget(self.loading_label)
 
