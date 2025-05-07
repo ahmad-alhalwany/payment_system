@@ -201,7 +201,7 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
             'users': {'data': None, 'timestamp': 0},
             'activity': {'data': None, 'timestamp': 0}
         }
-        self.cache_duration = 300  # 5 minutes cache duration
+        self.cache_duration = 600  # 10 minutes cache duration
         
         # --- Add missing QLabel attributes for stats ---
         self.employees_count = QLabel("0")
@@ -664,16 +664,16 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
         self.dashboard_tab.setLayout(layout)
         
     def manual_refresh(self):
-        """Manually refresh all dashboard data."""
+        """Manually refresh all dashboard data with optimized loading"""
         try:
             # Clear all caches
             self._clear_cache()
             
-            # Reload all data
-            self.load_dashboard_data()
-            self.load_branches()
-            self.load_employees()
-            self.load_transactions()
+            # Load combined basic stats
+            self.load_combined_basic_stats()
+            
+            # Load current tab data
+            self.refresh_current_tab()
             
             self.statusBar().showMessage("تم تحديث البيانات بنجاح", 3000)
         except Exception as e:
@@ -1011,35 +1011,8 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
     def load_dashboard_data(self):
         """Load data for the dashboard with caching."""
         try:
-            headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
-            
-            # Load branch stats with caching
-            cached_branches = self._get_cached_data('branches')
-            if not cached_branches:
-                response = requests.get(f"{self.api_url}/branches/stats/", headers=headers)
-                if response.status_code == 200:
-                    cached_branches = response.json()
-                    self._update_cache('branches', cached_branches)
-            self.load_branch_stats()
-            
-            # Get employee stats with caching
-            cached_users = self._get_cached_data('users')
-            if not cached_users:
-                response = requests.get(f"{self.api_url}/users/stats/", headers=headers)
-                if response.status_code == 200:
-                    cached_users = response.json()
-                    self._update_cache('users', cached_users)
-            self.employees_count.setText(str(cached_users.get("total", 0)))
-            
-            # Get transaction stats with caching
-            cached_transactions = self._get_cached_data('transactions')
-            if not cached_transactions:
-                response = requests.get(f"{self.api_url}/transactions/stats/", headers=headers)
-                if response.status_code == 200:
-                    cached_transactions = response.json()
-                    self._update_cache('transactions', cached_transactions)
-            self.transactions_count.setText(str(cached_transactions.get("total", 0)))
-            self.amount_total.setText(f"{cached_transactions.get('total_amount', 0):,.2f}")
+            # Load combined basic stats
+            self.load_combined_basic_stats()
             
             # Load recent transactions only if needed
             if self.tabs.currentIndex() == 0:  # Only load if on dashboard tab
@@ -2222,24 +2195,75 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
             self.load_settings_details()
 
     def setup_auto_refresh(self):
-        """Setup automatic refresh timers"""
-        # Basic stats refresh every 5 minutes
+        """Setup automatic refresh timers with optimized intervals"""
+        # Basic stats refresh every 10 minutes
         self.basic_refresh_timer = QTimer()
-        self.basic_refresh_timer.timeout.connect(self.load_basic_dashboard_data)
-        self.basic_refresh_timer.start(300000)  # 5 minutes
+        self.basic_refresh_timer.timeout.connect(self.load_combined_basic_stats)
+        self.basic_refresh_timer.start(600000)  # 10 minutes
         
         # Current tab refresh every minute
         self.tab_refresh_timer = QTimer()
         self.tab_refresh_timer.timeout.connect(self.refresh_current_tab)
         self.tab_refresh_timer.start(60000)  # 1 minute
 
-    def update_basic_stats(self, stats):
-        """Update basic statistics display"""
+    def load_combined_basic_stats(self):
+        """Load all basic statistics in one combined request"""
         try:
-            self.employees_count.setText(str(stats.get("total_employees", 0)))
-            self.transactions_count.setText(str(stats.get("total_transactions", 0)))
-            self.amount_total.setText(f"{stats.get('total_amount', 0):,.2f}")
-            self.branches_count.setText(str(stats.get("total_branches", 0)))
+            headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
+            
+            # Check if we have valid cached data
+            if self._is_cache_valid('basic_stats'):
+                self.update_basic_stats(self._get_cached_data('basic_stats'))
+                return
+                
+            # Make parallel requests for all basic stats
+            responses = {
+                'branches': requests.get(f"{self.api_url}/branches/stats/", headers=headers),
+                'users': requests.get(f"{self.api_url}/users/stats/", headers=headers),
+                'financial': requests.get(f"{self.api_url}/financial/total/", headers=headers)
+            }
+            
+            # Combine all responses
+            combined_stats = {}
+            for key, response in responses.items():
+                if response.status_code == 200:
+                    combined_stats.update(response.json())
+            
+            # Update cache with combined data
+            self._update_cache('basic_stats', combined_stats)
+            
+            # Update UI with new data
+            self.update_basic_stats(combined_stats)
+            
+        except Exception as e:
+            print(f"Error loading combined basic stats: {e}")
+
+    def update_basic_stats(self, stats):
+        """Update all basic statistics displays with combined data"""
+        try:
+            # Update employee stats
+            if hasattr(self, 'employees_count'):
+                self.employees_count.setText(str(stats.get("total_employees", 0)))
+                
+            # Update transaction stats
+            if hasattr(self, 'transactions_count'):
+                self.transactions_count.setText(str(stats.get("total_transactions", 0)))
+                
+            # Update financial stats
+            if hasattr(self, 'amount_total'):
+                self.amount_total.setText(f"{stats.get('total_amount', 0):,.2f}")
+                
+            # Update branch stats
+            if hasattr(self, 'branches_count'):
+                self.branches_count.setText(str(stats.get("total_branches", 0)))
+                
+            # Update financial balances
+            if hasattr(self, 'syp_balance'):
+                self.syp_balance.setText(f"{stats.get('total_balance_syp', 0):,.0f} ل.س")
+                
+            if hasattr(self, 'usd_balance'):
+                self.usd_balance.setText(f"{stats.get('total_balance_usd', 0):,.2f} $")
+                
         except Exception as e:
             print(f"Error updating basic stats: {e}")
 
