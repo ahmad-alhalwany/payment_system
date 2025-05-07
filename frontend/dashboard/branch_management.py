@@ -20,65 +20,139 @@ API_BASE_URL = get_api_url()
 class BranchDataCache:
     """Cache for branch data to reduce API calls and improve performance"""
     
-    def __init__(self, cache_duration=300):  # 5 minutes default cache duration
-        self._cache = {}
-        self._cache_timestamps = {}
-        self._cache_duration = cache_duration
+    def __init__(self, cache_duration=600):  # 10 minutes default cache duration
+        self._cache = {
+            'basic': {},      # Basic branch data
+            'details': {},    # Detailed branch data
+            'stats': {},      # Branch statistics
+            'employees': {},  # Branch employees
+            'funds': {}       # Fund history
+        }
+        self._cache_timestamps = {
+            'basic': {},
+            'details': {},
+            'stats': {},
+            'employees': {},
+            'funds': {}
+        }
+        self._cache_duration = {
+            'basic': cache_duration,      # 10 minutes
+            'details': 300,               # 5 minutes
+            'stats': 180,                 # 3 minutes
+            'employees': 300,             # 5 minutes
+            'funds': 180                  # 3 minutes
+        }
+        self._cache_priority = {
+            'basic': 1,      # Highest priority
+            'details': 3,
+            'stats': 2,
+            'employees': 4,
+            'funds': 5      # Lowest priority
+        }
+        self._max_cache_size = 1000  # Maximum number of cache entries
         self._update_timer = QTimer()
         self._update_timer.timeout.connect(self._cleanup_expired_cache)
         self._update_timer.start(60000)  # Cleanup every minute
         
-    def get(self, key):
+    def get(self, key, cache_type='basic'):
         """Get cached data if it exists and is not expired"""
-        if key in self._cache:
-            if time.time() - self._cache_timestamps[key] < self._cache_duration:
-                return self._cache[key]
+        if cache_type in self._cache and key in self._cache[cache_type]:
+            if time.time() - self._cache_timestamps[cache_type][key] < self._cache_duration[cache_type]:
+                # Update timestamp to mark as recently used
+                self._cache_timestamps[cache_type][key] = time.time()
+                return self._cache[cache_type][key]
             else:
-                del self._cache[key]
-                del self._cache_timestamps[key]
+                del self._cache[cache_type][key]
+                del self._cache_timestamps[cache_type][key]
         return None
         
-    def set(self, key, value):
-        """Cache data with current timestamp"""
-        self._cache[key] = value
-        self._cache_timestamps[key] = time.time()
+    def set(self, key, value, cache_type='basic'):
+        """Cache data with current timestamp and handle cache size limits"""
+        if cache_type in self._cache:
+            # Check if we need to make space in cache
+            if self._get_total_cache_size() >= self._max_cache_size:
+                self._remove_least_important_cache()
+            
+            self._cache[cache_type][key] = value
+            self._cache_timestamps[cache_type][key] = time.time()
         
-    def invalidate(self, key=None):
+    def _get_total_cache_size(self):
+        """Get total number of cache entries"""
+        return sum(len(cache) for cache in self._cache.values())
+        
+    def _remove_least_important_cache(self):
+        """Remove least important cache entries when cache is full"""
+        # Sort cache types by priority
+        sorted_types = sorted(self._cache_priority.items(), key=lambda x: x[1], reverse=True)
+        
+        for cache_type, _ in sorted_types:
+            if self._cache[cache_type]:
+                # Remove oldest entry from this cache type
+                oldest_key = min(
+                    self._cache_timestamps[cache_type].items(),
+                    key=lambda x: x[1]
+                )[0]
+                del self._cache[cache_type][oldest_key]
+                del self._cache_timestamps[cache_type][oldest_key]
+                break
+        
+    def invalidate(self, key=None, cache_type=None):
         """Invalidate specific cache entry or all cache if no key provided"""
-        if key:
-            if key in self._cache:
-                del self._cache[key]
-                del self._cache_timestamps[key]
+        if cache_type:
+            if key:
+                if cache_type in self._cache and key in self._cache[cache_type]:
+                    del self._cache[cache_type][key]
+                    del self._cache_timestamps[cache_type][key]
+            else:
+                self._cache[cache_type].clear()
+                self._cache_timestamps[cache_type].clear()
         else:
-            self._cache.clear()
-            self._cache_timestamps.clear()
+            for cache_type in self._cache:
+                if key:
+                    if key in self._cache[cache_type]:
+                        del self._cache[cache_type][key]
+                        del self._cache_timestamps[cache_type][key]
+                else:
+                    self._cache[cache_type].clear()
+                    self._cache_timestamps[cache_type].clear()
             
     def _cleanup_expired_cache(self):
-        """Remove expired cache entries"""
+        """Remove expired cache entries and optimize cache size"""
         current_time = time.time()
-        expired_keys = [
-            key for key, timestamp in self._cache_timestamps.items()
-            if current_time - timestamp >= self._cache_duration
-        ]
-        for key in expired_keys:
-            del self._cache[key]
-            del self._cache_timestamps[key]
+        for cache_type in self._cache:
+            expired_keys = [
+                key for key, timestamp in self._cache_timestamps[cache_type].items()
+                if current_time - timestamp >= self._cache_duration[cache_type]
+            ]
+            for key in expired_keys:
+                del self._cache[cache_type][key]
+                del self._cache_timestamps[cache_type][key]
+                
+        # If cache is still too large after cleanup, remove least important entries
+        if self._get_total_cache_size() >= self._max_cache_size:
+            self._remove_least_important_cache()
 
 class BranchManagementMixin:
     """Mixin handling all branch-related operations"""
     
     def __init__(self):
-        """Initialize the mixin with cache, batch processing, and auto-refresh timer"""
+        """Initialize the mixin with cache, batch processing, and smart auto-refresh timer"""
         self.branch_cache = BranchDataCache()
         self._batch_size = 50  # Number of rows to process at once
         self._update_timer = QTimer()
         self._update_timer.timeout.connect(self._process_batch)
         self._pending_updates = []
-        # Auto-refresh timer for branches table (every 90 seconds)
+        
+        # Smart auto-refresh timer for branches table
         self._branches_auto_refresh_timer = QTimer()
-        self._branches_auto_refresh_timer.setInterval(90000)  # 90,000 ms = 90 seconds
-        self._branches_auto_refresh_timer.timeout.connect(self._auto_refresh_branches)
+        self._branches_auto_refresh_timer.setInterval(90000)  # 90 seconds initial interval
+        self._branches_auto_refresh_timer.timeout.connect(self._smart_refresh_branches)
         self._branches_auto_refresh_timer.start()
+        
+        # Track last user activity
+        self._last_activity_time = time.time()
+        self._min_refresh_interval = 30000  # 30 seconds minimum
+        self._max_refresh_interval = 300000  # 5 minutes maximum
         
     def _process_batch(self):
         """Process a batch of pending updates"""
@@ -101,14 +175,39 @@ class BranchManagementMixin:
         if not self._update_timer.isActive():
             self._update_timer.start(50)
 
-    def _auto_refresh_branches(self):
-        """Auto-refresh the branches table and show a message."""
+    def _smart_refresh_branches(self):
+        """Smart refresh that adapts to user activity"""
+        current_time = time.time()
+        time_since_last_activity = current_time - self._last_activity_time
+        
+        # If user is inactive for more than 5 minutes, reduce refresh rate
+        if time_since_last_activity > 300:  # 5 minutes
+            self._branches_auto_refresh_timer.setInterval(self._max_refresh_interval)
+        else:
+            # Calculate dynamic interval based on activity
+            dynamic_interval = min(
+                max(
+                    int(time_since_last_activity * 1000),  # Convert to milliseconds
+                    self._min_refresh_interval
+                ),
+                self._max_refresh_interval
+            )
+            self._branches_auto_refresh_timer.setInterval(dynamic_interval)
+        
+        # Perform refresh
         self.branch_cache.invalidate('branches')
         self.load_branches()
+        
         if hasattr(self, 'status_bar'):
             self.status_bar.showMessage("تم تحديث بيانات الفروع تلقائيًا.", 3000)
         elif hasattr(self, 'statusBar') and callable(self.statusBar):
             self.statusBar().showMessage("تم تحديث بيانات الفروع تلقائيًا.", 3000)
+            
+    def _update_last_activity(self):
+        """Update last activity timestamp"""
+        self._last_activity_time = time.time()
+        # Reset refresh interval to minimum when user is active
+        self._branches_auto_refresh_timer.setInterval(self._min_refresh_interval)
 
     def setup_branches_tab(self):
         """Set up the branches tab."""
@@ -229,11 +328,19 @@ class BranchManagementMixin:
         """Load branches from the API with optimized performance using QThread."""
         try:
             if not force_refresh:
-                cached_data = self.branch_cache.get('branches')
+                cached_data = self.branch_cache.get('branches', 'basic')
                 if cached_data:
                     self._update_branches_table(cached_data)
                     return
-            # استخدم worker لجلب البيانات في الخلفية
+
+            # Show loading indicator
+            self.branches_table.setRowCount(1)
+            loading_item = QTableWidgetItem("جاري تحميل البيانات...")
+            loading_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.branches_table.setItem(0, 0, loading_item)
+            self.branches_table.setSpan(0, 0, 1, 8)
+
+            # Use worker to load data in background
             self.branch_load_worker = BranchLoadWorker(API_BASE_URL, self.token)
             self.branch_load_worker.branches_loaded.connect(self._on_branches_loaded)
             self.branch_load_worker.error_occurred.connect(self._on_branches_error)
@@ -242,7 +349,8 @@ class BranchManagementMixin:
             QMessageBox.critical(self, "خطأ", f"حدث خطأ: {str(e)}")
 
     def _on_branches_loaded(self, branches):
-        self.branch_cache.set('branches', branches)
+        """Handle loaded branches data"""
+        self.branch_cache.set('branches', branches, 'basic')
         self._update_branches_table(branches)
 
     def _on_branches_error(self, msg):
@@ -392,7 +500,7 @@ class BranchManagementMixin:
                 )
     
     def view_branch(self):
-        """View details of the selected branch."""
+        """View details of the selected branch with lazy loading."""
         selected_rows = self.branches_table.selectionModel().selectedRows()
         if not selected_rows:
             QMessageBox.warning(self, "تنبيه", "الرجاء تحديد فرع للعرض")
@@ -401,128 +509,188 @@ class BranchManagementMixin:
         row = selected_rows[0].row()
         branch_id = self.branches_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
         
+        # Check cache first
+        cached_details = self.branch_cache.get(branch_id, 'details')
+        if cached_details:
+            self._show_branch_details_dialog(cached_details)
+            return
+
         try:
+            # Show loading dialog
+            loading_dialog = QDialog(self)
+            loading_dialog.setWindowTitle("جاري التحميل")
+            loading_dialog.setFixedSize(200, 100)
+            loading_layout = QVBoxLayout()
+            loading_label = QLabel("جاري تحميل تفاصيل الفرع...")
+            loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            loading_layout.addWidget(loading_label)
+            loading_dialog.setLayout(loading_layout)
+            loading_dialog.show()
+
+            # Load data in background
             headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
             response = requests.get(
                 f"{API_BASE_URL}/branches/{branch_id}",
                 headers=headers
             )
             
+            loading_dialog.close()
+            
             if response.status_code == 200:
                 branch_data = response.json()
-                
-                # Create a dialog to display branch details
-                dialog = QDialog(self)
-                dialog.setWindowTitle(f"تفاصيل الفرع: {branch_data.get('name', '')}")
-                dialog.setGeometry(150, 150, 600, 400)
-                dialog.setStyleSheet(f"""
-                    QDialog {{
-                        background-color: {Theme.BG_PRIMARY};
-                        font-family: {Theme.FONT_PRIMARY};
-                    }}
-                    QLabel {{
-                        color: {Theme.TEXT_PRIMARY};
-                    }}
-                """)
-                
-                layout = QVBoxLayout()
-                
-                # Branch details
-                details_group = ModernGroupBox("معلومات الفرع", Theme.ACCENT)
-                details_layout = QFormLayout()
-                
-                details_layout.addRow("رمز الفرع:", QLabel(branch_data.get("branch_id", "")))
-                details_layout.addRow("اسم الفرع:", QLabel(branch_data.get("name", "")))
-                details_layout.addRow("الموقع:", QLabel(branch_data.get("location", "")))
-                details_layout.addRow("المحافظة:", QLabel(branch_data.get("governorate", "")))
-                
-                details_group.setLayout(details_layout)
-                layout.addWidget(details_group)
-                
-                # Branch employees
-                employees_group = ModernGroupBox("موظفي الفرع", "#2ecc71")
-                employees_layout = QVBoxLayout()
-                
-                employees_table = QTableWidget()
-                employees_table.setColumnCount(3)
-                employees_table.setHorizontalHeaderLabels(["اسم المستخدم", "الدور", "تاريخ الإنشاء"])
-                employees_table.horizontalHeader().setStretchLastSection(True)
-                employees_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-                
-                try:
-                    headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
-                    response = requests.get(
-                                f"{API_BASE_URL}/branches/{branch_id}/employees/", 
-                        headers=headers
-                    )
-                    
-                    if response.status_code == 200:
-                        employees = response.json()
-                        employees_table.setRowCount(len(employees))
-                        
-                        for i, employee in enumerate(employees):
-                            employees_table.setItem(i, 0, QTableWidgetItem(employee.get("username", "")))
-                            
-                            # Map role to Arabic
-                            role = employee.get("role", "")
-                            role_arabic = "موظف"
-                            if role == "director":
-                                role_arabic = "مدير"
-                            elif role == "branch_manager":
-                                role_arabic = "مدير فرع"
-                            
-                            employees_table.setItem(i, 1, QTableWidgetItem(role_arabic))
-                            employees_table.setItem(i, 2, QTableWidgetItem(employee.get("created_at", "")))
-                except Exception as e:
-                    print(f"Error loading branch employees: {e}")
-                
-                employees_layout.addWidget(employees_table)
-                employees_group.setLayout(employees_layout)
-                layout.addWidget(employees_group)
-                
-                # Branch statistics
-                stats_group = ModernGroupBox("إحصائيات الفرع", "#e74c3c")
-                stats_layout = QFormLayout()
-                
-                try:
-                    headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
-                    
-                    # Get employee stats
-                    emp_response = requests.get(
-                                f"{API_BASE_URL}/branches/{branch_id}/employees/stats/", 
-                        headers=headers
-                    )
-                    if emp_response.status_code == 200:
-                        emp_data = emp_response.json()
-                        stats_layout.addRow("عدد الموظفين:", QLabel(str(emp_data.get("total", 0))))
-                    
-                    # Get transaction stats
-                    trans_response = requests.get(
-                                f"{API_BASE_URL}/branches/{branch_id}/transactions/stats/", 
-                        headers=headers
-                    )
-                    if trans_response.status_code == 200:
-                        trans_data = trans_response.json()
-                        stats_layout.addRow("عدد التحويلات:", QLabel(str(trans_data.get("total", 0))))
-                        stats_layout.addRow("إجمالي المبالغ:", QLabel(f"{trans_data.get('total_amount', 0):,.2f}"))
-                except Exception as e:
-                    print(f"Error loading branch statistics: {e}")
-                
-                stats_group.setLayout(stats_layout)
-                layout.addWidget(stats_group)
-                
-                # Close button
-                close_button = ModernButton("إغلاق", color=Theme.ERROR)
-                close_button.clicked.connect(dialog.accept)
-                layout.addWidget(close_button)
-                
-                dialog.setLayout(layout)
-                dialog.exec()
+                # Cache the details
+                self.branch_cache.set(branch_id, branch_data, 'details')
+                self._show_branch_details_dialog(branch_data)
             else:
                 QMessageBox.warning(self, "خطأ", f"فشل في تحميل بيانات الفرع: رمز الحالة {response.status_code}")
         except Exception as e:
+            loading_dialog.close()
             QMessageBox.critical(self, "خطأ", f"حدث خطأ: {str(e)}")
+
+    def _show_branch_details_dialog(self, branch_data):
+        """Show branch details dialog with cached data."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"تفاصيل الفرع: {branch_data.get('name', '')}")
+        dialog.setGeometry(150, 150, 600, 400)
+        dialog.setStyleSheet(f"""
+            QDialog {{
+                background-color: {Theme.BG_PRIMARY};
+                font-family: {Theme.FONT_PRIMARY};
+            }}
+            QLabel {{
+                color: {Theme.TEXT_PRIMARY};
+            }}
+        """)
         
+        layout = QVBoxLayout()
+        
+        # Branch details
+        details_group = ModernGroupBox("معلومات الفرع", Theme.ACCENT)
+        details_layout = QFormLayout()
+        
+        details_layout.addRow("رمز الفرع:", QLabel(branch_data.get("branch_id", "")))
+        details_layout.addRow("اسم الفرع:", QLabel(branch_data.get("name", "")))
+        details_layout.addRow("الموقع:", QLabel(branch_data.get("location", "")))
+        details_layout.addRow("المحافظة:", QLabel(branch_data.get("governorate", "")))
+        
+        details_group.setLayout(details_layout)
+        layout.addWidget(details_group)
+        
+        # Load employees and stats only when needed
+        employees_group = ModernGroupBox("موظفي الفرع", "#2ecc71")
+        employees_layout = QVBoxLayout()
+        
+        employees_table = QTableWidget()
+        employees_table.setColumnCount(3)
+        employees_table.setHorizontalHeaderLabels(["اسم المستخدم", "الدور", "تاريخ الإنشاء"])
+        employees_table.horizontalHeader().setStretchLastSection(True)
+        employees_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        
+        # Check cache for employees
+        cached_employees = self.branch_cache.get(branch_data.get('id'), 'employees')
+        if cached_employees:
+            self._populate_employees_table(employees_table, cached_employees)
+        else:
+            # Load employees in background
+            self._load_branch_employees(branch_data.get('id'), employees_table)
+        
+        employees_layout.addWidget(employees_table)
+        employees_group.setLayout(employees_layout)
+        layout.addWidget(employees_group)
+        
+        # Branch statistics
+        stats_group = ModernGroupBox("إحصائيات الفرع", "#e74c3c")
+        stats_layout = QFormLayout()
+        
+        # Check cache for stats
+        cached_stats = self.branch_cache.get(branch_data.get('id'), 'stats')
+        if cached_stats:
+            self._populate_stats_layout(stats_layout, cached_stats)
+        else:
+            # Load stats in background
+            self._load_branch_stats(branch_data.get('id'), stats_layout)
+        
+        stats_group.setLayout(stats_layout)
+        layout.addWidget(stats_group)
+        
+        # Close button
+        close_button = ModernButton("إغلاق", color=Theme.ERROR)
+        close_button.clicked.connect(dialog.accept)
+        layout.addWidget(close_button)
+        
+        dialog.setLayout(layout)
+        dialog.exec()
+
+    def _load_branch_employees(self, branch_id, table):
+        """Load branch employees in background."""
+        try:
+            headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
+            response = requests.get(
+                f"{API_BASE_URL}/branches/{branch_id}/employees/", 
+                headers=headers
+            )
+            
+            if response.status_code == 200:
+                employees = response.json()
+                self.branch_cache.set(branch_id, employees, 'employees')
+                self._populate_employees_table(table, employees)
+        except Exception as e:
+            print(f"Error loading branch employees: {e}")
+
+    def _load_branch_stats(self, branch_id, layout):
+        """Load branch statistics in background."""
+        try:
+            headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
+            
+            # Get employee stats
+            emp_response = requests.get(
+                f"{API_BASE_URL}/branches/{branch_id}/employees/stats/", 
+                headers=headers
+            )
+            
+            # Get transaction stats
+            trans_response = requests.get(
+                f"{API_BASE_URL}/branches/{branch_id}/transactions/stats/", 
+                headers=headers
+            )
+            
+            stats = {
+                'employees': emp_response.json() if emp_response.status_code == 200 else {},
+                'transactions': trans_response.json() if trans_response.status_code == 200 else {}
+            }
+            
+            self.branch_cache.set(branch_id, stats, 'stats')
+            self._populate_stats_layout(layout, stats)
+            
+        except Exception as e:
+            print(f"Error loading branch statistics: {e}")
+
+    def _populate_employees_table(self, table, employees):
+        """Populate employees table with data."""
+        table.setRowCount(len(employees))
+        for i, employee in enumerate(employees):
+            table.setItem(i, 0, QTableWidgetItem(employee.get("username", "")))
+            
+            # Map role to Arabic
+            role = employee.get("role", "")
+            role_arabic = "موظف"
+            if role == "director":
+                role_arabic = "مدير"
+            elif role == "branch_manager":
+                role_arabic = "مدير فرع"
+            
+            table.setItem(i, 1, QTableWidgetItem(role_arabic))
+            table.setItem(i, 2, QTableWidgetItem(employee.get("created_at", "")))
+
+    def _populate_stats_layout(self, layout, stats):
+        """Populate statistics layout with data."""
+        if 'employees' in stats:
+            layout.addRow("عدد الموظفين:", QLabel(str(stats['employees'].get("total", 0))))
+        
+        if 'transactions' in stats:
+            layout.addRow("عدد التحويلات:", QLabel(str(stats['transactions'].get("total", 0))))
+            layout.addRow("إجمالي المبالغ:", QLabel(f"{stats['transactions'].get('total_amount', 0):,.2f}"))
+
     def load_branches_for_filter(self):
         """Load branches for filter dropdowns in all tabs."""
         try:
@@ -578,80 +746,6 @@ class BranchManagementMixin:
         except Exception as e:
             print(f"Error loading branches: {e}")
             QMessageBox.warning(self, "خطأ", "تعذر تحميل قائمة الفروع")
-            
-    def load_branch_stats(self):
-        try:
-            headers = {"Authorization": f"Bearer {self.token}"}
-            response = requests.get(f"{API_BASE_URL}/branches/stats/", headers=headers)
-            
-            if response.status_code == 200:
-                data = response.json()
-                branches = data.get("branches", [])
-                
-                # Update branches count in dashboard
-                self.branches_count.setText(str(data.get("total", 0)))
-                
-                if not branches:
-                    self.transfers_bars.setText("لا توجد بيانات متاحة")
-                    self.amounts_bars.setText("لا توجد بيانات متاحة")
-                    return
-                
-                # Get top 3 branches for transfers
-                top_transfers = sorted(
-                    branches, 
-                    key=lambda x: x['transactions_count'], 
-                    reverse=True
-                )[:3]
-
-                # Get top 3 branches for amounts
-                top_amounts = sorted(
-                    branches, 
-                    key=lambda x: x['total_amount'], 
-                    reverse=True
-                )[:3]
-
-                # Prepare transfers HTML
-                transfers_html = ["<table width='100%'>"]
-                if top_transfers:
-                    max_transfers = max(t['transactions_count'] for t in top_transfers)
-                    for branch in top_transfers:
-                        width = (branch['transactions_count'] / max_transfers * 80) if max_transfers != 0 else 0
-                        transfers_html.append(
-                            f"<tr>"
-                            f"<td width='30%' align='right'>{branch['name']}</td>"
-                            f"<td width='60%'><div style='background: #3498db; height: 20px; width: {width}%; "
-                            f"border-radius: 10px; margin: 2px;'></div></td>"
-                            f"<td width='10%' align='left'>{branch['transactions_count']}</td>"
-                            f"</tr>"
-                        )
-                transfers_html.append("</table>")
-                
-                # Prepare amounts HTML
-                amounts_html = ["<table width='100%'>"]
-                if top_amounts:
-                    max_amount = max(a['total_amount'] for a in top_amounts)
-                    for branch in top_amounts:
-                        width = (branch['total_amount'] / max_amount * 80) if max_amount != 0 else 0
-                        amounts_html.append(
-                            f"<tr>"
-                            f"<td width='30%' align='right'>{branch['name']}</td>"
-                            f"<td width='60%'><div style='background: #e74c3c; height: 20px; width: {width}%; "
-                            f"border-radius: 10px; margin: 2px;'></div></td>"
-                            f"<td width='10%' align='left'>{branch['total_amount']:,.2f}</td>"
-                            f"</tr>"
-                        )
-                amounts_html.append("</table>")
-
-                self.transfers_bars.setText("".join(transfers_html))
-                self.amounts_bars.setText("".join(amounts_html))
-            else:
-                self.transfers_bars.setText("حدث خطأ في جلب البيانات")
-                self.amounts_bars.setText("حدث خطأ في جلب البيانات")
-
-        except Exception as e:
-            print(f"Error loading branch stats: {e}")
-            self.transfers_bars.setText("تعذر تحميل بيانات التحويلات")
-            self.amounts_bars.setText("تعذر تحميل بيانات المبالغ")
             
             
     def view_fund_history(self):

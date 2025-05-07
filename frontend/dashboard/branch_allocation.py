@@ -221,6 +221,29 @@ class BranchAllocationMixin:
 
             # Handle response
             if response.status_code == 200:
+                response_data = response.json()
+                
+                # Find the row index for the current branch
+                target_row = -1
+                for row in range(self.branches_table.rowCount()):
+                    if self.branches_table.item(row, 0).data(Qt.ItemDataRole.UserRole) == branch_id:
+                        target_row = row
+                        break
+                
+                if target_row != -1:
+                    # Update SYP balance (column 5)
+                    syp_item = QTableWidgetItem(f"{response_data['new_allocated_syp']:,.2f}")
+                    syp_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                    self.branches_table.setItem(target_row, 5, syp_item)
+                    
+                    # Update USD balance (column 6)
+                    usd_item = QTableWidgetItem(f"{response_data['new_allocated_usd']:,.2f}")
+                    usd_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                    self.branches_table.setItem(target_row, 6, usd_item)
+                    
+                    # Force the table to refresh the display
+                    self.branches_table.viewport().update()
+                
                 QMessageBox.information(
                     self, 
                     "نجاح", 
@@ -228,9 +251,8 @@ class BranchAllocationMixin:
                     f"المبلغ: {amount:,.2f} {currency}\n"
                     f"النوع: {'إضافة' if operation_type == 'allocation' else 'خصم'}"
                 )
-                # Refresh data and close dialog
-                self.load_branches()
-                self.load_branches_for_filter()  # Refresh filters if needed
+                
+                # Close dialog after successful update
                 dialog.accept()
             else:
                 error_msg = "خطأ غير معروف"
