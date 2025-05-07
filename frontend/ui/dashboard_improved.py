@@ -212,7 +212,7 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
         # Modify timer intervals and combine updates
         self.update_timer = QTimer(self)
         self.update_timer.timeout.connect(self.smart_update)
-        self.update_timer.start(300000)  # 5 minutes
+        self.update_timer.start(600000)  # 10 minutes
         
         self.time_timer = QTimer(self)
         self.time_timer.timeout.connect(self.update_time)
@@ -234,36 +234,37 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
         self.tabs.currentChanged.connect(self.on_tab_changed)
         
     def smart_update(self):
-        """Smart update method that combines multiple updates and uses caching"""
+        """Smart update mechanism that only updates necessary data."""
         try:
-            # Only update if the dashboard is visible
-            if not self.isVisible():
-                return
-                
-            current_time = time.time()
-            needs_update = False
+            current_tab = self.tab_widget.currentWidget()
+            current_tab_name = current_tab.objectName() if current_tab else None
             
-            # Check which data needs updating
-            for key in self._data_cache:
-                if not self._is_cache_valid(key):
-                    needs_update = True
-                    break
-            
-            if not needs_update:
-                return
-                
-            # Update basic stats if needed
+            # Update basic stats if cache is expired
             if not self._is_cache_valid('basic_stats'):
-                self.load_basic_dashboard_data()
+                self.load_combined_basic_stats()
             
-            # Update current tab data
-            self.refresh_current_tab()
+            # Update current tab data if needed
+            if current_tab_name:
+                if current_tab_name == 'transactions_tab' and not self._is_cache_valid('transactions'):
+                    self.load_transaction_stats()
+                elif current_tab_name == 'branches_tab' and not self._is_cache_valid('branches'):
+                    self.load_branch_status()
+                elif current_tab_name == 'users_tab' and not self._is_cache_valid('users'):
+                    self.load_user_stats()
+                elif current_tab_name == 'employees_tab' and not self._is_cache_valid('employees'):
+                    self.load_employee_stats()
+                elif current_tab_name == 'reports_tab' and not self._is_cache_valid('reports'):
+                    self.load_reports_details()
+                elif current_tab_name == 'inventory_tab' and not self._is_cache_valid('inventory'):
+                    self.load_inventory_details()
             
-            # Update time display
-            self.update_time()
+            # Update recent activity only if needed
+            if not self._is_cache_valid('activity'):
+                self.load_recent_activity()
             
         except Exception as e:
             print(f"Error in smart update: {e}")
+            self.statusBar().showMessage(f"خطأ في التحديث التلقائي: {str(e)}", 5000)
 
     def load_basic_dashboard_data(self):
         """Load only essential dashboard data with combined requests"""
@@ -680,20 +681,25 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
             self.statusBar().showMessage(f"خطأ في تحديث البيانات: {str(e)}", 5000)
     
     def refresh_dashboard(self):
-        """Refresh all dashboard data."""
+        """Refresh all dashboard data with optimized caching."""
         try:
-            # Update financial status
-            self.load_financial_status()
+            # Check if we need to update basic stats
+            if not self._is_cache_valid('basic_stats'):
+                self.load_combined_basic_stats()
+            else:
+                # Use cached data
+                cached_stats = self._get_cached_data('basic_stats')
+                if cached_stats:
+                    self.update_basic_stats(cached_stats)
             
-            # Update branch status
-            self.load_branch_status()
-            
-            # Update recent activity
-            self.load_recent_activity()
+            # Update recent activity only if needed
+            if not self._is_cache_valid('activity'):
+                self.load_recent_activity()
             
         except Exception as e:
             print(f"Error refreshing dashboard: {e}")
-            
+            self.statusBar().showMessage(f"خطأ في تحديث لوحة المعلومات: {str(e)}", 5000)
+    
     def load_financial_status(self):
         """Load and display financial status."""
         try:
@@ -2228,6 +2234,8 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
             for key, response in responses.items():
                 if response.status_code == 200:
                     combined_stats.update(response.json())
+                else:
+                    print(f"Error loading {key} stats: {response.status_code}")
             
             # Update cache with combined data
             self._update_cache('basic_stats', combined_stats)
@@ -2235,37 +2243,48 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
             # Update UI with new data
             self.update_basic_stats(combined_stats)
             
+            # Also update individual caches
+            if 'branches' in responses and responses['branches'].status_code == 200:
+                self._update_cache('branches', responses['branches'].json())
+            if 'users' in responses and responses['users'].status_code == 200:
+                self._update_cache('users', responses['users'].json())
+            if 'financial' in responses and responses['financial'].status_code == 200:
+                self._update_cache('financial', responses['financial'].json())
+            
         except Exception as e:
             print(f"Error loading combined basic stats: {e}")
+            self.statusBar().showMessage(f"خطأ في تحميل البيانات الأساسية: {str(e)}", 5000)
 
-    def update_basic_stats(self, stats):
-        """Update all basic statistics displays with combined data"""
+    def update_basic_stats(self, data):
+        """Update basic statistics with combined data."""
         try:
-            # Update employee stats
-            if hasattr(self, 'employees_count'):
-                self.employees_count.setText(str(stats.get("total_employees", 0)))
-                
-            # Update transaction stats
-            if hasattr(self, 'transactions_count'):
-                self.transactions_count.setText(str(stats.get("total_transactions", 0)))
-                
-            # Update financial stats
-            if hasattr(self, 'amount_total'):
-                self.amount_total.setText(f"{stats.get('total_amount', 0):,.2f}")
-                
             # Update branch stats
-            if hasattr(self, 'branches_count'):
-                self.branches_count.setText(str(stats.get("total_branches", 0)))
-                
-            # Update financial balances
-            if hasattr(self, 'syp_balance'):
-                self.syp_balance.setText(f"{stats.get('total_balance_syp', 0):,.0f} ل.س")
-                
-            if hasattr(self, 'usd_balance'):
-                self.usd_balance.setText(f"{stats.get('total_balance_usd', 0):,.2f} $")
-                
+            if 'branches' in data:
+                branch_stats = data['branches']
+                self.branch_count_label.setText(str(branch_stats.get('total', 0)))
+                self.active_branches_label.setText(str(branch_stats.get('active', 0)))
+                self.inactive_branches_label.setText(str(branch_stats.get('inactive', 0)))
+            
+            # Update user stats
+            if 'users' in data:
+                user_stats = data['users']
+                self.total_users_label.setText(str(user_stats.get('total', 0)))
+                self.active_users_label.setText(str(user_stats.get('active', 0)))
+                self.inactive_users_label.setText(str(user_stats.get('inactive', 0)))
+            
+            # Update financial stats
+            if 'financial' in data:
+                financial_stats = data['financial']
+                self.total_balance_label.setText(f"{financial_stats.get('total_balance', 0):,.2f}")
+                self.total_income_label.setText(f"{financial_stats.get('total_income', 0):,.2f}")
+                self.total_expenses_label.setText(f"{financial_stats.get('total_expenses', 0):,.2f}")
+            
+            # Update cache timestamp
+            self._update_cache('basic_stats', data)
+            
         except Exception as e:
             print(f"Error updating basic stats: {e}")
+            self.statusBar().showMessage(f"خطأ في تحديث الإحصائيات الأساسية: {str(e)}", 5000)
 
     def update_branch_filters(self, branches):
         """Update branch filters with basic branch data"""
@@ -2371,11 +2390,24 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
             
             # Initialize report handler if not exists
             if not hasattr(self, 'report_handler'):
+                from dashboard.report_handler import ReportHandlerMixin
                 self.report_handler = ReportHandlerMixin()
-                self.report_handler.setup_ui(self.reports_content)
+                self.report_handler.set_api_client(self.token, self.api_url)
+                self.report_handler.set_parent(self)
+                
+                # Create reports content layout if not exists
+                if not hasattr(self, 'reports_content_layout'):
+                    self.reports_content_layout = QVBoxLayout()
+                    self.reports_content.setLayout(self.reports_content_layout)
+                
+                # Setup report handler UI
+                self.report_handler.setup_reports_tab()
+                
+                # Add the reports tab widget to our layout
+                self.reports_content_layout.addWidget(self.report_handler.reports_tab)
             
-            # Load reports
-            self.report_handler.load_reports()
+            # Generate initial report
+            self.report_handler.generate_report()
             
             # Hide loading indicator
             if hasattr(self, 'reports_loading'):
@@ -2383,6 +2415,9 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
             
         except Exception as e:
             print(f"Error loading reports details: {e}")
+            if hasattr(self, 'reports_loading'):
+                self.reports_loading.setVisible(False)
+            self.statusBar().showMessage(f"خطأ في تحميل التقارير: {str(e)}", 5000)
 
     def load_inventory_details(self):
         """Load inventory tab data"""
@@ -2393,11 +2428,19 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
             
             # Initialize inventory widget if not exists
             if not hasattr(self, 'inventory_widget'):
+                from dashboard.inventory import InventoryTab
                 self.inventory_widget = InventoryTab(token=self.token, parent=self)
-                self.inventory_content.layout().addWidget(self.inventory_widget)
+                
+                # Create inventory content layout if not exists
+                if not hasattr(self, 'inventory_content_layout'):
+                    self.inventory_content_layout = QVBoxLayout()
+                    self.inventory_content.setLayout(self.inventory_content_layout)
+                
+                # Add inventory widget to layout
+                self.inventory_content_layout.addWidget(self.inventory_widget)
             
             # Load inventory data
-            self.inventory_widget.load_inventory()
+            self.inventory_widget.load_data()
             
             # Hide loading indicator
             if hasattr(self, 'inventory_loading'):
@@ -2405,6 +2448,9 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
             
         except Exception as e:
             print(f"Error loading inventory details: {e}")
+            if hasattr(self, 'inventory_loading'):
+                self.inventory_loading.setVisible(False)
+            self.statusBar().showMessage(f"خطأ في تحميل بيانات المخزون: {str(e)}", 5000)
 
     def load_settings_details(self):
         """Load settings tab data"""

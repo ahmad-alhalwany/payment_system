@@ -1,13 +1,14 @@
 from PyQt6.QtWidgets import (
     QGridLayout, QGroupBox, QLabel, QComboBox, QDateEdit,
     QTableWidget, QTableWidgetItem, QFileDialog, QMessageBox, 
-    QVBoxLayout, QHBoxLayout, QHeaderView
+    QVBoxLayout, QHBoxLayout, QHeaderView, QWidget
 )
 from PyQt6.QtGui import QFont, QColor
 from PyQt6.QtCore import Qt, QDate, QThread, pyqtSignal
 from ui.custom_widgets import ModernGroupBox, ModernButton
 from utils.helpers import get_status_arabic, get_status_color
 import requests
+from api.client import APIClient
 
 class ReportWorker(QThread):
     result_ready = pyqtSignal(dict, str)
@@ -36,6 +37,40 @@ class ReportWorker(QThread):
 class ReportHandlerMixin:
     """Mixin class handling report generation and export functionality"""
     
+    def __init__(self):
+        """Initialize the mixin with required widgets"""
+        self.reports_tab = QWidget()
+        self.report_table = QTableWidget()
+        self.report_type = QComboBox()
+        self.from_date = QDateEdit()
+        self.to_date = QDateEdit()
+        self.report_branch_filter = QComboBox()
+        self.parent = None  # Will be set when the mixin is used
+        self.token = None
+        self.api_url = None
+        self.api_client = None
+        self.branch_id_to_name = {}
+    
+    def set_parent(self, parent):
+        """Set the parent widget for showing messages"""
+        self.parent = parent
+    
+    def set_api_client(self, token, api_url):
+        """Set the API client with token and URL"""
+        self.token = token
+        self.api_url = api_url
+        self.api_client = APIClient(token)
+    
+    def show_message(self, message, duration=3000):
+        """Show a message using QMessageBox"""
+        if self.parent:
+            QMessageBox.information(self.parent, "معلومات", message)
+    
+    def show_error(self, message):
+        """Show an error message using QMessageBox"""
+        if self.parent:
+            QMessageBox.warning(self.parent, "خطأ", message)
+    
     def setup_reports_tab(self):
         """Set up the reports tab."""
         layout = QVBoxLayout()
@@ -55,7 +90,6 @@ class ReportHandlerMixin:
         report_type_label = QLabel("نوع التقرير:")
         options_layout.addWidget(report_type_label, 0, 0)
         
-        self.report_type = QComboBox()
         self.report_type.addItems(["تقرير التحويلات", "تقرير الفروع", "تقرير الموظفين"])
         options_layout.addWidget(self.report_type, 0, 1)
         
@@ -68,7 +102,6 @@ class ReportHandlerMixin:
         from_date_label = QLabel("من:")
         date_range_layout.addWidget(from_date_label)
         
-        self.from_date = QDateEdit()
         self.from_date.setCalendarPopup(True)
         self.from_date.setDate(QDate.currentDate().addDays(-30))  # Last 30 days
         date_range_layout.addWidget(self.from_date)
@@ -76,7 +109,6 @@ class ReportHandlerMixin:
         to_date_label = QLabel("إلى:")
         date_range_layout.addWidget(to_date_label)
         
-        self.to_date = QDateEdit()
         self.to_date.setCalendarPopup(True)
         self.to_date.setDate(QDate.currentDate())
         date_range_layout.addWidget(self.to_date)
@@ -159,9 +191,9 @@ class ReportHandlerMixin:
                 params["branch_id"] = branch_id
             url = f"{self.api_url}/users/"
         else:
-            self.statusBar().showMessage("نوع التقرير غير مدعوم", 5000)
+            self.show_error("نوع التقرير غير مدعوم")
             return
-        self.statusBar().showMessage("جاري تحميل التقرير...")
+        self.show_message("جاري تحميل التقرير...")
         self.report_table.setRowCount(0)
         self.report_worker = ReportWorker(url, headers, params, report_type)
         self.report_worker.result_ready.connect(self._on_report_data_ready)
@@ -292,12 +324,11 @@ class ReportHandlerMixin:
         self.report_table.horizontalHeader().setStretchLastSection(True)
         self.report_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.report_table.setSortingEnabled(True)
-        self.statusBar().showMessage("تم إنشاء التقرير بنجاح", 3000)
-        QMessageBox.information(self, "نجاح", "تم إنشاء التقرير بنجاح")
+        self.show_message("تم إنشاء التقرير بنجاح")
+        QMessageBox.information(self.parent, "نجاح", "تم إنشاء التقرير بنجاح")
 
     def _on_report_error(self, msg):
-        self.statusBar().showMessage(msg, 5000)
-        QMessageBox.warning(self, "خطأ", msg)
+        self.show_error(msg)
 
     def export_pdf(self):
         """Export the current report as PDF."""
