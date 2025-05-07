@@ -11,6 +11,121 @@ from ui.custom_widgets import ModernGroupBox, ModernButton
 from datetime import datetime
 import os
 from money_transfer.receipt_printer import ReceiptPrinter
+import time
+
+# كلاس إدارة التخزين المؤقت
+class SearchCacheManager:
+    _instance = None
+    CACHE_TIMEOUT = 300  # 5 دقائق
+    MAX_CACHE_SIZE = 100
+
+    @classmethod
+    def getInstance(cls):
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+
+    def __init__(self):
+        self.users_cache = {}  # key: str, value: (timestamp, data)
+        self.transfers_cache = {}  # key: str, value: (timestamp, data)
+
+    def _prune_cache(self, cache):
+        # تنظيف الكاش عند تجاوز الحجم
+        if len(cache) > self.MAX_CACHE_SIZE:
+            # حذف الأقدم
+            sorted_items = sorted(cache.items(), key=lambda x: x[1][0])
+            for k, _ in sorted_items[:len(cache) - self.MAX_CACHE_SIZE]:
+                del cache[k]
+
+    def get_users(self, key):
+        entry = self.users_cache.get(key)
+        if entry and (time.time() - entry[0] < self.CACHE_TIMEOUT):
+            return entry[1]
+        return None
+
+    def set_users(self, key, data):
+        self.users_cache[key] = (time.time(), data)
+        self._prune_cache(self.users_cache)
+
+    def get_transfers(self, key):
+        entry = self.transfers_cache.get(key)
+        if entry and (time.time() - entry[0] < self.CACHE_TIMEOUT):
+            return entry[1]
+        return None
+
+    def set_transfers(self, key, data):
+        self.transfers_cache[key] = (time.time(), data)
+        self._prune_cache(self.transfers_cache)
+
+class TransferDetailsDialog(QDialog):
+    """Dialog for displaying transfer details with reusability."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("تفاصيل التحويل")
+        self.setGeometry(150, 150, 600, 500)
+        self.setup_ui()
+        
+    def setup_ui(self):
+        """Setup the dialog UI elements."""
+        self.layout = QVBoxLayout()
+        
+        # Title
+        self.title = QLabel("تفاصيل التحويل")
+        self.title.setFont(QFont("Arial", 16, QFont.Weight.Bold))
+        self.title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.title.setStyleSheet("color: #2c3e50; margin-bottom: 20px;")
+        self.layout.addWidget(self.title)
+        
+        # Details group
+        self.details_group = ModernGroupBox("معلومات التحويل", "#3498db")
+        self.details_layout = QVBoxLayout()
+        
+        self.details_label = QLabel()
+        self.details_label.setTextFormat(Qt.TextFormat.RichText)
+        self.details_label.setWordWrap(True)
+        self.details_layout.addWidget(self.details_label)
+        
+        self.details_group.setLayout(self.details_layout)
+        self.layout.addWidget(self.details_group)
+        
+        # Close button
+        self.close_button = ModernButton("إغلاق", color="#e74c3c")
+        self.close_button.clicked.connect(self.accept)
+        self.layout.addWidget(self.close_button)
+        
+        self.setLayout(self.layout)
+    
+    def show_details(self, transaction):
+        """Update and show transaction details."""
+        if not transaction:
+            return
+            
+        details_text = f"""
+        <b>رقم التحويل:</b> {transaction.get('id', '')}<br>
+        <b>التاريخ:</b> {transaction.get('date', '')}<br>
+        <br>
+        <b>المرسل:</b> {transaction.get('sender', '')}<br>
+        <b>رقم هاتف المرسل:</b> {transaction.get('sender_mobile', '')}<br>
+        <b>محافظة المرسل:</b> {transaction.get('sender_governorate', '')}<br>
+        <b>موقع المرسل:</b> {transaction.get('sender_location', '')}<br>
+        <br>
+        <b>المستلم:</b> {transaction.get('receiver', '')}<br>
+        <b>رقم هاتف المستلم:</b> {transaction.get('receiver_mobile', '')}<br>
+        <b>محافظة المستلم:</b> {transaction.get('receiver_governorate', '')}<br>
+        <b>موقع المستلم:</b> {transaction.get('receiver_location', '')}<br>
+        <br>
+        <b>المبلغ:</b> {transaction.get('amount', '')} {transaction.get('currency', '')}<br>
+        <b>الرسالة:</b> {transaction.get('message', '')}<br>
+        <br>
+        <b>الفرع المرسل:</b> {transaction.get('branch_name', '')}<br>
+        <b>الفرع المستلم:</b> {transaction.get('destination_branch_name', '')}<br>
+        <b>الموظف:</b> {transaction.get('employee_name', '')}<br>
+        <b>الحالة:</b> {self.parent()._get_status_arabic(transaction.get('status', ''))}<br>
+        <b>تم الاستلام:</b> {'نعم' if transaction.get('is_received', False) else 'لا'}<br>
+        """
+        
+        self.details_label.setText(details_text)
+        self.show()
 
 class UserSearchDialog(QDialog):
     """Dialog for searching and viewing user and transaction information."""
@@ -22,6 +137,15 @@ class UserSearchDialog(QDialog):
         self.token = token
         self.api_url = os.environ["API_URL"]
         self.received = received
+        self.cache_manager = SearchCacheManager.getInstance()
+        self._details_dialog = None  # For reusing details dialog
+        self._error_messages = {
+            'timeout': "انتهت مهلة الاتصال بالخادم. الرجاء المحاولة مرة أخرى.",
+            'connection': "تعذر الاتصال بالخادم. الرجاء التحقق من اتصالك بالإنترنت.",
+            'server': "تعذر الاتصال بالخادم. الرجاء التحقق من اتصالك بالإنترنت وحالة الخادم.",
+            'auth': "انتهت صلاحية الجلسة. الرجاء تسجيل الدخول مرة أخرى.",
+            'not_found': "لم يتم العثور على المورد المطلوب"
+        }
         
         self.setWindowTitle("بحث المستخدمين والتحويلات")
         self.setGeometry(100, 100, 1000, 700)
@@ -386,11 +510,43 @@ class UserSearchDialog(QDialog):
                 item.setVisible(is_visible)
     
     def search_users(self):
-        """Search for customers (senders/receivers) based on the selected criteria."""
         search_term = self.user_search_input.text().strip()
         if not search_term and not self.user_type_radio.isChecked():
             QMessageBox.warning(self, "تنبيه", "الرجاء إدخال كلمة البحث")
             return
+
+        # بناء مفتاح الكاش بناءً على نوع البحث والمعايير
+        if self.name_radio.isChecked():
+            cache_key = f"name:{search_term}"
+        elif self.mobile_radio.isChecked():
+            cache_key = f"mobile:{search_term}"
+        elif self.id_radio.isChecked():
+            cache_key = f"id:{search_term}"
+        elif self.governorate_radio.isChecked():
+            cache_key = f"gov:{search_term}"
+        elif self.user_type_radio.isChecked():
+            user_type_value = self.user_type_combo.currentData()
+            cache_key = f"type:{user_type_value}"
+        else:
+            cache_key = f"all:{search_term}"
+
+        # جلب من الكاش أولاً
+        cached = self.cache_manager.get_users(cache_key)
+        if cached is not None:
+            self.users_table.setRowCount(0)
+            self._fill_users_table(cached)
+            return
+
+        # Show loading indicator
+        self.users_table.setRowCount(1)
+        loading_item = QTableWidgetItem("جاري البحث...")
+        loading_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.users_table.setItem(0, 0, loading_item)
+        for col in range(1, self.users_table.columnCount()):
+            self.users_table.setItem(0, col, QTableWidgetItem(""))
+        self.user_search_button.setEnabled(False)
+        self.user_search_button.setText("جاري البحث...")
+        QApplication.processEvents()
 
         # Only send non-empty parameters
         params = {}
@@ -407,17 +563,6 @@ class UserSearchDialog(QDialog):
             if user_type_value:
                 params["user_type"] = user_type_value
 
-        # Show loading indicator
-        self.users_table.setRowCount(1)
-        loading_item = QTableWidgetItem("جاري البحث...")
-        loading_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.users_table.setItem(0, 0, loading_item)
-        for col in range(1, self.users_table.columnCount()):
-            self.users_table.setItem(0, col, QTableWidgetItem(""))
-        self.user_search_button.setEnabled(False)
-        self.user_search_button.setText("جاري البحث...")
-        QApplication.processEvents()
-
         try:
             headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
             response = requests.get(f"{self.api_url}/customers/", params=params, headers=headers, timeout=10)
@@ -427,59 +572,95 @@ class UserSearchDialog(QDialog):
                 if not customers:
                     QMessageBox.information(self, "نتائج البحث", "لم يتم العثور على نتائج مطابقة لمعايير البحث")
                     return
-                self.users_table.setRowCount(len(customers))
-                for i, cust in enumerate(customers):
-                    user_type = cust.get("user_type", "")
-                    if user_type == "sender":
-                        name = cust.get("sender_name", "غير متوفر") or "غير متوفر"
-                        mobile = cust.get("sender_mobile", "غير متوفر") or "غير متوفر"
-                        governorate = cust.get("sender_governorate", "غير متوفر") or "غير متوفر"
-                        location = cust.get("sender_location", "غير متوفر") or "غير متوفر"
-                        id_number = cust.get("sender_id", "غير متوفر") or "غير متوفر"
-                    else:
-                        name = cust.get("receiver_name", "غير متوفر") or "غير متوفر"
-                        mobile = cust.get("receiver_mobile", "غير متوفر") or "غير متوفر"
-                        governorate = cust.get("receiver_governorate", "غير متوفر") or "غير متوفر"
-                        location = cust.get("receiver_location", "غير متوفر") or "غير متوفر"
-                        id_number = cust.get("receiver_id", "غير متوفر") or "غير متوفر"
-                    name_item = QTableWidgetItem(name)
-                    name_item.setData(Qt.ItemDataRole.UserRole, cust)
-                    self.users_table.setItem(i, 0, name_item)
-                    self.users_table.setItem(i, 1, QTableWidgetItem(mobile))
-                    self.users_table.setItem(i, 2, QTableWidgetItem(governorate))
-                    self.users_table.setItem(i, 3, QTableWidgetItem(location))
-                    self.users_table.setItem(i, 4, QTableWidgetItem(id_number))
-                    user_type_arabic = "مرسل" if user_type == "sender" else "مستلم"
-                    type_item = QTableWidgetItem(user_type_arabic)
-                    type_item.setBackground(QColor(200, 255, 200) if user_type == "sender" else QColor(255, 200, 200))
-                    self.users_table.setItem(i, 5, type_item)
-                self.users_table.sortItems(0, Qt.SortOrder.AscendingOrder)
+                self._fill_users_table(customers)
+                # تحديث الكاش
+                self.cache_manager.set_users(cache_key, customers)
             elif response.status_code == 401:
-                QMessageBox.warning(self, "خطأ في المصادقة", "انتهت صلاحية الجلسة. الرجاء تسجيل الدخول مرة أخرى.")
+                self.show_error('auth')
             elif response.status_code == 404:
-                QMessageBox.warning(self, "خطأ", "لم يتم العثور على المورد المطلوب")
+                self.show_error('not_found')
             else:
-                QMessageBox.warning(self, "خطأ", f"فشل البحث: رمز الحالة {response.status_code}")
+                self._handle_api_error(response)
         except requests.exceptions.Timeout:
-            QMessageBox.critical(self, "خطأ في الاتصال", "انتهت مهلة الاتصال بالخادم. الرجاء المحاولة مرة أخرى.")
+            self.show_error('timeout')
         except requests.exceptions.ConnectionError:
-            QMessageBox.critical(self, "خطأ في الاتصال", "تعذر الاتصال بالخادم. الرجاء التحقق من اتصالك بالإنترنت.")
+            self.show_error('connection')
         except Exception as e:
             print(f"Error searching users: {e}")
-            QMessageBox.critical(self, "خطأ في الاتصال", "تعذر الاتصال بالخادم. الرجاء التحقق من اتصالك بالإنترنت وحالة الخادم.")
+            self.show_error('server', f"تعذر الاتصال بالخادم. الرجاء التحقق من اتصالك بالإنترنت وحالة الخادم.")
         finally:
             self.user_search_button.setEnabled(True)
             self.user_search_button.setText("بحث")
-    
+
+    def _fill_users_table(self, customers):
+        self.users_table.setRowCount(len(customers))
+        for i, cust in enumerate(customers):
+            user_type = cust.get("user_type", "")
+            if user_type == "sender":
+                name = cust.get("sender_name", "غير متوفر") or "غير متوفر"
+                mobile = cust.get("sender_mobile", "غير متوفر") or "غير متوفر"
+                governorate = cust.get("sender_governorate", "غير متوفر") or "غير متوفر"
+                location = cust.get("sender_location", "غير متوفر") or "غير متوفر"
+                id_number = cust.get("sender_id", "غير متوفر") or "غير متوفر"
+            else:
+                name = cust.get("receiver_name", "غير متوفر") or "غير متوفر"
+                mobile = cust.get("receiver_mobile", "غير متوفر") or "غير متوفر"
+                governorate = cust.get("receiver_governorate", "غير متوفر") or "غير متوفر"
+                location = cust.get("receiver_location", "غير متوفر") or "غير متوفر"
+                id_number = cust.get("receiver_id", "غير متوفر") or "غير متوفر"
+            name_item = QTableWidgetItem(name)
+            name_item.setData(Qt.ItemDataRole.UserRole, cust)
+            self.users_table.setItem(i, 0, name_item)
+            self.users_table.setItem(i, 1, QTableWidgetItem(mobile))
+            self.users_table.setItem(i, 2, QTableWidgetItem(governorate))
+            self.users_table.setItem(i, 3, QTableWidgetItem(location))
+            self.users_table.setItem(i, 4, QTableWidgetItem(id_number))
+            user_type_arabic = "مرسل" if user_type == "sender" else "مستلم"
+            type_item = QTableWidgetItem(user_type_arabic)
+            type_item.setBackground(QColor(200, 255, 200) if user_type == "sender" else QColor(255, 200, 200))
+            self.users_table.setItem(i, 5, type_item)
+        self.users_table.sortItems(0, Qt.SortOrder.AscendingOrder)
+
     def search_transfers(self):
-        """Search for transfers based on the selected criteria."""
         search_term = self.transfer_search_input.text().strip()
         if not search_term and not self.status_radio.isChecked():
             QMessageBox.warning(self, "تنبيه", "الرجاء إدخال كلمة البحث")
             return
-        
-        # Determine search type
-        search_type = "transaction_id"  # Default
+
+        # بناء مفتاح الكاش بناءً على نوع البحث والمعايير
+        if self.transaction_id_radio.isChecked():
+            cache_key = f"id:{search_term}"
+        elif self.sender_name_radio.isChecked():
+            cache_key = f"sender:{search_term}"
+        elif self.receiver_name_radio.isChecked():
+            cache_key = f"receiver:{search_term}"
+        elif self.status_radio.isChecked():
+            cache_key = f"status:{self.status_combo.currentData()}"
+        elif self.date_radio.isChecked():
+            cache_key = f"date:{search_term}"
+        else:
+            cache_key = f"all:{search_term}"
+
+        # جلب من الكاش أولاً
+        cached = self.cache_manager.get_transfers(cache_key)
+        if cached is not None:
+            self.transfers_table.setRowCount(0)
+            self._fill_transfers_table(cached)
+            return
+
+        # Show loading indicator
+        self.transfers_table.setRowCount(1)
+        loading_item = QTableWidgetItem("جاري البحث...")
+        loading_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.transfers_table.setItem(0, 0, loading_item)
+        for col in range(1, self.transfers_table.columnCount()):
+            self.transfers_table.setItem(0, col, QTableWidgetItem(""))
+        self.transfer_search_button.setEnabled(False)
+        self.transfer_search_button.setText("جاري البحث...")
+        QApplication.processEvents()
+
+        # ... بناء params كما هو ...
+        search_type = "transaction_id"
         if self.sender_name_radio.isChecked():
             search_type = "sender_name"
         elif self.receiver_name_radio.isChecked():
@@ -489,8 +670,7 @@ class UserSearchDialog(QDialog):
             search_term = self.status_combo.currentData()
         elif self.date_radio.isChecked():
             search_type = "date"
-        
-        # Only send non-empty parameters
+
         params = {}
         if search_type == "transaction_id" and search_term:
             params["id"] = search_term
@@ -503,92 +683,63 @@ class UserSearchDialog(QDialog):
         elif search_type == "date" and search_term:
             params["date"] = search_term
 
-        # Show loading indicator
-        self.transfers_table.setRowCount(1)
-        loading_item = QTableWidgetItem("جاري البحث...")
-        loading_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.transfers_table.setItem(0, 0, loading_item)
-        for col in range(1, self.transfers_table.columnCount()):
-            self.transfers_table.setItem(0, col, QTableWidgetItem(""))
-        
-        # Disable search button during search
-        self.transfer_search_button.setEnabled(False)
-        self.transfer_search_button.setText("جاري البحث...")
-        
-        # Process events to update UI
-        QApplication.processEvents()
-        
         try:
             headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
-            
-            # Use the standard /transactions/ endpoint with query parameters instead of custom search endpoint
             response = requests.get(f"{self.api_url}/transactions/", params=params, headers=headers, timeout=10)
-            
             if response.status_code == 200:
                 transactions_data = response.json()
                 transactions = transactions_data.get("transactions", [])
-                
                 if not transactions:
                     QMessageBox.information(self, "نتائج البحث", "لم يتم العثور على تحويلات مطابقة لمعايير البحث")
                     return
-                
-                self.transfers_table.setRowCount(len(transactions))
-                
-                for i, transaction in enumerate(transactions):
-                    # Create transaction ID item and store transaction data
-                    id_item = QTableWidgetItem(str(transaction.get("id", "")))
-                    id_item.setData(Qt.ItemDataRole.UserRole, transaction)
-                    self.transfers_table.setItem(i, 0, id_item)
-                    
-                    # Set other columns
-                    self.transfers_table.setItem(i, 1, QTableWidgetItem(transaction.get("sender", "")))
-                    self.transfers_table.setItem(i, 2, QTableWidgetItem(transaction.get("receiver", "")))
-                    self.transfers_table.setItem(i, 3, QTableWidgetItem(str(transaction.get("amount", ""))))
-                    self.transfers_table.setItem(i, 4, QTableWidgetItem(transaction.get("currency", "")))
-                    self.transfers_table.setItem(i, 5, QTableWidgetItem(transaction.get("receiver_governorate", "")))
-                    
-                    # Map status values to Arabic
-                    status = transaction.get("status", "")
-                    status_arabic = self._get_status_arabic(status)
-                    
-                    status_item = QTableWidgetItem(status_arabic)
-                    
-                    # Color-code status
-                    if status_arabic == "تم الاستلام":
-                        status_item.setBackground(QColor(200, 255, 200))  # Light green
-                    elif status_arabic == "ملغي":
-                        status_item.setBackground(QColor(255, 200, 200))  # Light red
-                    elif status_arabic == "قيد المعالجة":
-                        status_item.setBackground(QColor(255, 255, 200))  # Light yellow
-                    elif status_arabic == "مرفوض":
-                        status_item.setBackground(QColor(255, 150, 150))  # Darker red
-                    elif status_arabic == "معلق":
-                        status_item.setBackground(QColor(200, 200, 255))  # Light blue
-                    
-                    self.transfers_table.setItem(i, 6, status_item)
-                    self.transfers_table.setItem(i, 7, QTableWidgetItem(transaction.get("date", "")))
-                
-                # Sort by date (newest first) for better usability
-                self.transfers_table.sortItems(7, Qt.SortOrder.DescendingOrder)
+                self._fill_transfers_table(transactions)
+                # تحديث الكاش
+                self.cache_manager.set_transfers(cache_key, transactions)
             elif response.status_code == 401:
-                QMessageBox.warning(self, "خطأ في المصادقة", "انتهت صلاحية الجلسة. الرجاء تسجيل الدخول مرة أخرى.")
+                self.show_error('auth')
             elif response.status_code == 404:
-                QMessageBox.warning(self, "خطأ", "لم يتم العثور على المورد المطلوب")
+                self.show_error('not_found')
             else:
-                QMessageBox.warning(self, "خطأ", f"فشل البحث: رمز الحالة {response.status_code}")
+                self._handle_api_error(response)
         except requests.exceptions.Timeout:
-            QMessageBox.critical(self, "خطأ في الاتصال", "انتهت مهلة الاتصال بالخادم. الرجاء المحاولة مرة أخرى.")
+            self.show_error('timeout')
         except requests.exceptions.ConnectionError:
-            QMessageBox.critical(self, "خطأ في الاتصال", "تعذر الاتصال بالخادم. الرجاء التحقق من اتصالك بالإنترنت.")
+            self.show_error('connection')
         except Exception as e:
             print(f"Error searching transfers: {e}")
-            QMessageBox.critical(self, "خطأ في الاتصال", 
-                               "تعذر الاتصال بالخادم. الرجاء التحقق من اتصالك بالإنترنت وحالة الخادم.")
+            self.show_error('server', f"تعذر الاتصال بالخادم. الرجاء التحقق من اتصالك بالإنترنت وحالة الخادم.")
         finally:
-            # Re-enable search button
             self.transfer_search_button.setEnabled(True)
             self.transfer_search_button.setText("بحث")
-    
+
+    def _fill_transfers_table(self, transactions):
+        self.transfers_table.setRowCount(len(transactions))
+        for i, transaction in enumerate(transactions):
+            id_item = QTableWidgetItem(str(transaction.get("id", "")))
+            id_item.setData(Qt.ItemDataRole.UserRole, transaction)
+            self.transfers_table.setItem(i, 0, id_item)
+            self.transfers_table.setItem(i, 1, QTableWidgetItem(transaction.get("sender", "")))
+            self.transfers_table.setItem(i, 2, QTableWidgetItem(transaction.get("receiver", "")))
+            self.transfers_table.setItem(i, 3, QTableWidgetItem(str(transaction.get("amount", ""))))
+            self.transfers_table.setItem(i, 4, QTableWidgetItem(transaction.get("currency", "")))
+            self.transfers_table.setItem(i, 5, QTableWidgetItem(transaction.get("receiver_governorate", "")))
+            status = transaction.get("status", "")
+            status_arabic = self._get_status_arabic(status)
+            status_item = QTableWidgetItem(status_arabic)
+            if status_arabic == "تم الاستلام":
+                status_item.setBackground(QColor(200, 255, 200))
+            elif status_arabic == "ملغي":
+                status_item.setBackground(QColor(255, 200, 200))
+            elif status_arabic == "قيد المعالجة":
+                status_item.setBackground(QColor(255, 255, 200))
+            elif status_arabic == "مرفوض":
+                status_item.setBackground(QColor(255, 150, 150))
+            elif status_arabic == "معلق":
+                status_item.setBackground(QColor(200, 200, 255))
+            self.transfers_table.setItem(i, 6, status_item)
+            self.transfers_table.setItem(i, 7, QTableWidgetItem(transaction.get("date", "")))
+        self.transfers_table.sortItems(7, Qt.SortOrder.DescendingOrder)
+
     def on_user_selection_changed(self):
         """Handle selection change in the users table."""
         selected_rows = self.users_table.selectionModel().selectedRows()
@@ -654,76 +805,14 @@ class UserSearchDialog(QDialog):
         transaction = self.transfers_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
         
         if not transaction:
-            QMessageBox.warning(self, "خطأ", "لم يتم العثور على بيانات التحويل")
+            self.show_error('not_found')
             return
+            
+        # Create details dialog only once and reuse it
+        if not self._details_dialog:
+            self._details_dialog = TransferDetailsDialog(self)
         
-        # Create a dialog to display detailed information
-        details_dialog = QDialog(self)
-        details_dialog.setWindowTitle("تفاصيل التحويل")
-        details_dialog.setGeometry(150, 150, 600, 500)
-        details_dialog.setStyleSheet("""
-            QDialog {
-                background-color: #f5f5f5;
-                font-family: Arial;
-            }
-            QLabel {
-                color: #333;
-            }
-        """)
-        
-        layout = QVBoxLayout()
-        
-        # Title
-        title = QLabel("تفاصيل التحويل")
-        title.setFont(QFont("Arial", 16, QFont.Weight.Bold))
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title.setStyleSheet("color: #2c3e50; margin-bottom: 20px;")
-        layout.addWidget(title)
-        
-        # Transaction details
-        details_group = ModernGroupBox("معلومات التحويل", "#3498db")
-        details_layout = QVBoxLayout()
-        
-        # Format transaction details
-        details_text = f"""
-        <b>رقم التحويل:</b> {transaction.get('id', '')}<br>
-        <b>التاريخ:</b> {transaction.get('date', '')}<br>
-        <br>
-        <b>المرسل:</b> {transaction.get('sender', '')}<br>
-        <b>رقم هاتف المرسل:</b> {transaction.get('sender_mobile', '')}<br>
-        <b>محافظة المرسل:</b> {transaction.get('sender_governorate', '')}<br>
-        <b>موقع المرسل:</b> {transaction.get('sender_location', '')}<br>
-        <br>
-        <b>المستلم:</b> {transaction.get('receiver', '')}<br>
-        <b>رقم هاتف المستلم:</b> {transaction.get('receiver_mobile', '')}<br>
-        <b>محافظة المستلم:</b> {transaction.get('receiver_governorate', '')}<br>
-        <b>موقع المستلم:</b> {transaction.get('receiver_location', '')}<br>
-        <br>
-        <b>المبلغ:</b> {transaction.get('amount', '')} {transaction.get('currency', '')}<br>
-        <b>الرسالة:</b> {transaction.get('message', '')}<br>
-        <br>
-        <b>الفرع المرسل:</b> {transaction.get('branch_name', '')}<br>
-        <b>الفرع المستلم:</b> {transaction.get('destination_branch_name', '')}<br>
-        <b>الموظف:</b> {transaction.get('employee_name', '')}<br>
-        <b>الحالة:</b> {self._get_status_arabic(transaction.get('status', ''))}<br>
-        <b>تم الاستلام:</b> {'نعم' if transaction.get('is_received', False) else 'لا'}<br>
-        """
-        
-        details_label = QLabel(details_text)
-        details_label.setTextFormat(Qt.TextFormat.RichText)
-        details_label.setWordWrap(True)
-        details_layout.addWidget(details_label)
-        
-        details_group.setLayout(details_layout)
-        layout.addWidget(details_group)
-        
-        # Close button
-        close_button = ModernButton("إغلاق", color="#e74c3c")
-        close_button.clicked.connect(details_dialog.accept)
-        layout.addWidget(close_button)
-        
-        details_dialog.setLayout(layout)
-        details_dialog.exec()
+        self._details_dialog.show_details(transaction)
     
     def print_transfer(self):
         """Print the selected transfer using ReceiptPrinter."""
@@ -900,3 +989,47 @@ class UserSearchDialog(QDialog):
             print(f"Error saving receiver info: {e}")
             QMessageBox.critical(self, "خطأ في الاتصال", 
                                "تعذر الاتصال بالخادم. الرجاء التحقق من اتصالك بالإنترنت وحالة الخادم.")
+
+    def show_error(self, error_key, additional_info=None):
+        """Show error message with consistent formatting."""
+        message = self._error_messages.get(error_key, "حدث خطأ غير معروف")
+        if additional_info:
+            message = f"{message}\n{additional_info}"
+        QMessageBox.critical(self, "خطأ", message)
+
+    def _handle_api_error(self, response, error_data=None):
+        """Handle API errors consistently."""
+        if response.status_code == 401:
+            self.show_error('auth')
+        elif response.status_code == 404:
+            self.show_error('not_found')
+        else:
+            error_msg = ""
+            if error_data and "detail" in error_data:
+                error_msg = f"\nالتفاصيل: {error_data['detail']}"
+            self.show_error('server', f"رمز الحالة: {response.status_code}{error_msg}")
+
+    def closeEvent(self, event):
+        """Clean up resources when closing the dialog."""
+        try:
+            # Clean up details dialog if it exists
+            if self._details_dialog:
+                self._details_dialog.close()
+                self._details_dialog = None
+            
+            # Clean up cache for old entries
+            if self.cache_manager:
+                current_time = time.time()
+                # Clean users cache
+                for key in list(self.cache_manager.users_cache.keys()):
+                    if current_time - self.cache_manager.users_cache[key][0] > self.cache_manager.CACHE_TIMEOUT:
+                        del self.cache_manager.users_cache[key]
+                # Clean transfers cache
+                for key in list(self.cache_manager.transfers_cache.keys()):
+                    if current_time - self.cache_manager.transfers_cache[key][0] > self.cache_manager.CACHE_TIMEOUT:
+                        del self.cache_manager.transfers_cache[key]
+            
+            event.accept()
+        except Exception as e:
+            print(f"Error during cleanup: {e}")
+            event.accept()
