@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (
     QCalendarWidget, QDialogButtonBox, QDoubleSpinBox, QTextEdit, QScrollArea
 )
 from ui.change_password import ChangePasswordDialog
-from datetime import datetime
+from datetime import datetime, timedelta
 from PyQt6.QtGui import QFont, QColor
 from PyQt6.QtCore import Qt, QTimer, QDate, QThread, pyqtSignal
 import os
@@ -57,18 +57,38 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
         self.report_total_pages = 1
         self.current_zoom = 100
         
+        # Loading state tracking
+        self._is_initializing = True
+        self._loading_priority = {
+            'essential': False,  # Branch info and financial status
+            'secondary': False,  # Employee stats and branches
+            'tertiary': False   # Reports and detailed data
+        }
+        
         # Cache tracking variables with timestamps
         self._last_financial_update = 0
         self._last_employee_stats = 0
         self._last_branches_update = 0
+        self._last_profits_update = 0
+        self._last_transactions_update = 0
+        
+        # Cache storage
         self._branches_cache = None
         self._financial_cache = None
         self._employee_stats_cache = None
+        self._profits_cache = None
+        self._transactions_cache = None
         
         # Cache duration in seconds
         self.FINANCIAL_CACHE_DURATION = 30  # 30 seconds for financial data
         self.EMPLOYEE_CACHE_DURATION = 300  # 5 minutes for employee stats
         self.BRANCHES_CACHE_DURATION = 300  # 5 minutes for branches data
+        self.PROFITS_CACHE_DURATION = 300   # 5 minutes for profits data
+        self.TRANSACTIONS_CACHE_DURATION = 60  # 1 minute for transactions
+        
+        # Request tracking
+        self._pending_requests = set()
+        self._request_timeouts = {}
         
         # Initialize UI first
         self.setup_initial_ui()
@@ -81,6 +101,95 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
         # Start progressive loading
         QTimer.singleShot(0, self.initialize_data)
     
+    def initialize_data(self):
+        """Initialize data progressively with loading indicators"""
+        try:
+            # Step 1: Load essential data first
+            self.statusBar().showMessage("جاري تحميل البيانات الأساسية...")
+            self._loading_priority['essential'] = True
+            
+            # Load branch info first
+            self.load_branch_info()
+            
+            # Load financial status
+            self.update_financial_status()
+            
+            # Step 2: Load secondary data after a short delay
+            QTimer.singleShot(500, self.load_secondary_data)
+            
+        except Exception as e:
+            print(f"Error in initial data loading: {e}")
+            self.statusBar().showMessage("حدث خطأ أثناء تحميل البيانات", 5000)
+            self._is_initializing = False
+
+    def load_secondary_data(self):
+        """Load secondary data after essential data is loaded"""
+        try:
+            if not self._loading_priority['essential']:
+                return
+                
+            self.statusBar().showMessage("جاري تحميل البيانات الإضافية...")
+            self._loading_priority['secondary'] = True
+            
+            # Load branches data
+            self.load_branches()
+            
+            # Load employee statistics
+            self.load_employee_stats()
+            
+            # Step 3: Load tertiary data after another delay
+            QTimer.singleShot(500, self.load_tertiary_data)
+            
+        except Exception as e:
+            print(f"Error loading secondary data: {e}")
+            self.statusBar().showMessage("حدث خطأ أثناء تحميل البيانات الإضافية", 5000)
+
+    def load_tertiary_data(self):
+        """Load tertiary data after secondary data is loaded"""
+        try:
+            if not self._loading_priority['secondary']:
+                return
+                
+            self.statusBar().showMessage("جاري تحميل البيانات التفصيلية...")
+            self._loading_priority['tertiary'] = True
+            
+            # Load initial profits data
+            self.load_profits_data()
+            
+            # Load initial transactions
+            self.load_transactions(branch_id=self.branch_id)
+            self.load_transactions(destination_branch_id=self.branch_id)
+            
+            # Mark initialization as complete
+            self._is_initializing = False
+            self.statusBar().showMessage("تم تحميل البيانات بنجاح", 3000)
+            
+        except Exception as e:
+            print(f"Error loading tertiary data: {e}")
+            self.statusBar().showMessage("حدث خطأ أثناء تحميل البيانات التفصيلية", 5000)
+
+    def setup_tab(self, tab_index):
+        """Lazy load tab content when selected"""
+        if tab_index == 0:  # Dashboard tab
+            if not self._loading_priority['essential']:
+                self.initialize_data()
+        elif tab_index == 1:  # Employees tab
+            if not self._loading_priority['secondary']:
+                self.load_secondary_data()
+        elif tab_index == 2:  # Transfers tab
+            if not self._loading_priority['tertiary']:
+                self.load_tertiary_data()
+        elif tab_index == 3:  # Reports tab
+            if not self._loading_priority['tertiary']:
+                self.load_tertiary_data()
+        elif tab_index == 4:  # Profits tab
+            if not self._loading_priority['tertiary']:
+                self.load_tertiary_data()
+
+    def tab_widget_changed(self, index):
+        """Handle tab changes with lazy loading"""
+        self.setup_tab(index)
+
     def setup_initial_ui(self):
         """Set up the initial UI without loading data"""
         self.setWindowTitle("لوحة تحكم مدير الفرع - نظام التحويلات المالية")
@@ -156,48 +265,14 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
         self.tab_widget.addTab(self.profits_tab, "الأرباح")
         self.tab_widget.addTab(self.settings_tab, "الإعدادات")
         
+        # Connect tab change signal
+        self.tab_widget.currentChanged.connect(self.tab_widget_changed)
+        
         main_layout.addWidget(self.tab_widget)
         
         # Status bar
         self.statusBar().showMessage("جاري التحميل...")
     
-    def initialize_data(self):
-        """Initialize data progressively with loading indicators"""
-        try:
-            # Step 1: Load essential data first (branch info and financial status)
-            self.statusBar().showMessage("جاري تحميل البيانات الأساسية...")
-            
-            # Load branch info first
-            self.load_branch_info()
-            
-            # Load financial status
-            self.update_financial_status()
-            
-            # Step 2: Load secondary data after a short delay
-            QTimer.singleShot(500, self.load_secondary_data)
-            
-        except Exception as e:
-            print(f"Error in initial data loading: {e}")
-            self.statusBar().showMessage("حدث خطأ أثناء تحميل البيانات", 5000)
-
-    def load_secondary_data(self):
-        """Load secondary data after essential data is loaded"""
-        try:
-            self.statusBar().showMessage("جاري تحميل البيانات الإضافية...")
-            
-            # Load branches data
-            self.load_branches()
-            
-            # Load employee statistics
-            self.load_employee_stats()
-            
-            # Update status
-            self.statusBar().showMessage("تم تحميل البيانات بنجاح", 3000)
-            
-        except Exception as e:
-            print(f"Error loading secondary data: {e}")
-            self.statusBar().showMessage("حدث خطأ أثناء تحميل البيانات الإضافية", 5000)
-
     def load_branch_info(self):
         """Load branch information with loading indicator"""
         try:
@@ -283,7 +358,8 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
         welcome_layout.addWidget(self.branch_name_label)
         
         # Current date with improved styling
-        date_label = QLabel("تاريخ اليوم: جاري التحميل...")
+        from datetime import datetime
+        date_label = QLabel(f"تاريخ اليوم: {datetime.now().strftime('%Y-%m-%d')}")
         date_label.setFont(QFont("Arial", 16))
         date_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         date_label.setWordWrap(True)  # Enable word wrapping
@@ -856,7 +932,7 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
         self.settings_tab.setLayout(layout)
     
     def refresh_dashboard_data(self):
-        """Refresh dashboard data with improved caching and on-demand updates"""
+        """Refresh dashboard data with improved caching"""
         try:
             current_time = time.time()
             
@@ -868,12 +944,10 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
             # Load branches if cache is expired
             if not self._branches_cache or current_time - self._last_branches_update > self.BRANCHES_CACHE_DURATION:
                 self.load_branches()
-                self._last_branches_update = current_time
             
             # Load employee statistics if cache is expired
             if not self._employee_stats_cache or current_time - self._last_employee_stats > self.EMPLOYEE_CACHE_DURATION:
                 self.load_employee_stats()
-                self._last_employee_stats = current_time
             
             # Update status bar
             self.statusBar().showMessage("تم تحديث البيانات بنجاح", 3000)
@@ -1600,6 +1674,145 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
         except Exception as e:
             print(f"Error updating financial status: {e}")
             self.show_financial_error()
+
+    def make_request(self, url, method="GET", params=None, data=None, cache_duration=None, cache_key=None):
+        """Make an API request with caching and request tracking"""
+        try:
+            # Check cache first if cache is enabled
+            if cache_duration and cache_key and hasattr(self, cache_key):
+                cache_data = getattr(self, cache_key)
+                cache_timestamp = getattr(self, f"_last_{cache_key.replace('_cache', '')}_update", 0)
+                
+                if cache_data and time.time() - cache_timestamp < cache_duration:
+                    return cache_data
+            
+            # Check if there's already a pending request for this URL
+            if url in self._pending_requests:
+                return None
+                
+            # Add to pending requests
+            self._pending_requests.add(url)
+            
+            # Make the request
+            headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
+            response = requests.request(
+                method,
+                url,
+                params=params,
+                json=data,
+                headers=headers,
+                timeout=5
+            )
+            
+            # Remove from pending requests
+            self._pending_requests.remove(url)
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                # Update cache if caching is enabled
+                if cache_duration and cache_key:
+                    setattr(self, cache_key, data)
+                    setattr(self, f"_last_{cache_key.replace('_cache', '')}_update", time.time())
+                
+                return data
+            else:
+                print(f"Request failed: {response.status_code}")
+                return None
+                
+        except Exception as e:
+            print(f"Request error: {str(e)}")
+            if url in self._pending_requests:
+                self._pending_requests.remove(url)
+            return None
+
+    def load_profits_data(self):
+        """Load profits data with caching"""
+        try:
+            current_time = time.time()
+            
+            # Check cache first
+            if (self._profits_cache and 
+                current_time - self._last_profits_update < self.PROFITS_CACHE_DURATION):
+                return self._profits_cache
+            
+            # Calculate date range
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=30)
+            
+            # Make request with caching
+            data = self.make_request(
+                f"{self.api_url}/api/branches/{self.branch_id}/profits/",
+                params={
+                    "start_date": start_date.strftime("%Y-%m-%d"),
+                    "end_date": end_date.strftime("%Y-%m-%d")
+                },
+                cache_duration=self.PROFITS_CACHE_DURATION,
+                cache_key="_profits_cache"
+            )
+            
+            if data:
+                self._profits_cache = data
+                self._last_profits_update = current_time
+                return data
+                
+        except Exception as e:
+            print(f"Error loading profits data: {e}")
+            return None
+
+    def load_transactions(self, branch_id=None, destination_branch_id=None):
+        """Load transactions with caching"""
+        try:
+            current_time = time.time()
+            cache_key = f"transactions_{branch_id}_{destination_branch_id}"
+            
+            # Check cache first
+            if (hasattr(self, f"_{cache_key}_cache") and 
+                current_time - getattr(self, f"_last_{cache_key}_update", 0) < self.TRANSACTIONS_CACHE_DURATION):
+                return getattr(self, f"_{cache_key}_cache")
+            
+            # Make request with caching
+            params = {}
+            if branch_id:
+                params["branch_id"] = branch_id
+            if destination_branch_id:
+                params["destination_branch_id"] = destination_branch_id
+            
+            data = self.make_request(
+                f"{self.api_url}/transactions/",
+                params=params,
+                cache_duration=self.TRANSACTIONS_CACHE_DURATION,
+                cache_key=f"_{cache_key}_cache"
+            )
+            
+            if data:
+                setattr(self, f"_{cache_key}_cache", data)
+                setattr(self, f"_last_{cache_key}_update", current_time)
+                return data
+                
+        except Exception as e:
+            print(f"Error loading transactions: {e}")
+            return None
+
+    def clear_cache(self, cache_type=None):
+        """Clear specific or all cache"""
+        if cache_type:
+            # Clear specific cache
+            if hasattr(self, f"_{cache_type}_cache"):
+                setattr(self, f"_{cache_type}_cache", None)
+                setattr(self, f"_last_{cache_type}_update", 0)
+        else:
+            # Clear all cache
+            self._branches_cache = None
+            self._financial_cache = None
+            self._employee_stats_cache = None
+            self._profits_cache = None
+            self._transactions_cache = None
+            self._last_branches_update = 0
+            self._last_financial_update = 0
+            self._last_employee_stats = 0
+            self._last_profits_update = 0
+            self._last_transactions_update = 0
 
 class QDateEditCalendarPopup(QDialog):
     def __init__(self, parent=None):
