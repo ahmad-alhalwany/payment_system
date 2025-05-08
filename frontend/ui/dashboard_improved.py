@@ -3,11 +3,10 @@ from PyQt6.QtWidgets import (
     QMainWindow, QTabWidget, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox, 
     QDialog, QLineEdit, QFormLayout, QComboBox, QGroupBox, QGridLayout, 
-    QStatusBar, QDateEdit, QDoubleSpinBox, QDialogButtonBox, QPushButton, QTextEdit,
-    QProgressBar, QListWidget, QListWidgetItem
+    QStatusBar, QDateEdit, QDoubleSpinBox, QDialogButtonBox, QPushButton, QTextEdit
 )
 from PyQt6.QtGui import QFont, QColor, QIcon
-from PyQt6.QtCore import Qt, QTimer, QDate, QThread, pyqtSignal, QSize, QObject, QRunnable, QThreadPool
+from PyQt6.QtCore import Qt, QTimer, QDate, QThread, pyqtSignal, QSize
 from ui.money_transfer_improved import MoneyTransferApp
 from dashboard.branch_management import BranchManagementMixin
 from ui.user_search import UserSearchDialog
@@ -28,19 +27,14 @@ from ui.password_reset import PasswordResetDialog
 import os
 import time
 from datetime import datetime
-import threading
 
 class TableUpdateManager:
     """Manages efficient table updates to prevent UI freezing"""
     
     def __init__(self, table_widget):
         self.table = table_widget
-        self.batch_size = 20  # Reduced batch size for smoother updates
-        self.update_delay = 5  # Reduced delay between batches
-        self._update_queue = []
-        self._is_updating = False
-        self._update_timer = QTimer()
-        self._update_timer.timeout.connect(self._process_next_batch)
+        self.batch_size = 50  # Number of rows to update at once
+        self.update_delay = 10  # Milliseconds between batch updates
         
     def begin_update(self):
         """Prepare table for batch updates"""
@@ -62,67 +56,44 @@ class TableUpdateManager:
         total_rows = len(data)
         self.table.setRowCount(total_rows)
         
-        # Queue all updates
-        self._update_queue = [(i, row_data) for i, row_data in enumerate(data)]
-        
-        # Start processing if not already running
-        if not self._is_updating:
-            self._is_updating = True
-            self._process_next_batch()
+        def update_batch(start_idx):
+            end_idx = min(start_idx + self.batch_size, total_rows)
             
-    def _process_next_batch(self):
-        """Process the next batch of updates"""
-        if not self._update_queue:
-            self._is_updating = False
-            self.end_update()
-            return
+            for row in range(start_idx, end_idx):
+                row_data = data[row]
+                for col, key in column_mapping.items():
+                    if isinstance(key, tuple):  # Custom formatting function
+                        key, formatter = key
+                        value = formatter(row_data.get(key, ""))
+                    else:
+                        value = str(row_data.get(key, ""))
+                    
+                    item = QTableWidgetItem(value)
+                    
+                    # Store original data for sorting
+                    if key in ['amount', 'date']:
+                        try:
+                            if key == 'amount':
+                                item.setData(Qt.ItemDataRole.UserRole, float(value.replace(',', '')))
+                            elif key == 'date':
+                                item.setData(Qt.ItemDataRole.UserRole, datetime.strptime(value, "%Y-%m-%d"))
+                        except (ValueError, TypeError):
+                            pass
+                    
+                    self.table.setItem(row, col, item)
             
-        # Get next batch
-        batch = self._update_queue[:self.batch_size]
-        self._update_queue = self._update_queue[self.batch_size:]
+            if end_idx < total_rows:
+                QTimer.singleShot(self.update_delay, lambda: update_batch(end_idx))
+            else:
+                self.end_update()
         
-        # Process batch
-        for row, row_data in batch:
-            for col, key in self.column_mapping.items():
-                if isinstance(key, tuple):  # Custom formatting function
-                    key, formatter = key
-                    value = formatter(row_data.get(key, ""))
-                else:
-                    value = str(row_data.get(key, ""))
-                
-                item = QTableWidgetItem(value)
-                
-                # Store original data for sorting
-                if key in ['amount', 'date']:
-                    try:
-                        if key == 'amount':
-                            item.setData(Qt.ItemDataRole.UserRole, float(value.replace(',', '')))
-                        elif key == 'date':
-                            item.setData(Qt.ItemDataRole.UserRole, datetime.strptime(value, "%Y-%m-%d"))
-                    except (ValueError, TypeError):
-                        pass
-                
-                self.table.setItem(row, col, item)
-        
-        # Schedule next batch
-        if self._update_queue:
-            QTimer.singleShot(self.update_delay, self._process_next_batch)
-        else:
-            self._is_updating = False
-            self.end_update()
-            
-    def cancel_updates(self):
-        """Cancel any pending updates"""
-        self._update_queue.clear()
-        self._is_updating = False
-        self.end_update()
+        self.begin_update()
+        update_batch(0)
 
 class DashboardCacheManager:
-    """Manages caching for dashboard data with smart memory management"""
+    """Manages caching for dashboard data"""
     _instance = None
     CACHE_TIMEOUT = 300  # 5 minutes cache timeout
-    MAX_CACHE_SIZE = 1000  # Maximum number of cache entries
-    CLEANUP_INTERVAL = 60000  # Cleanup every minute
 
     @classmethod
     def getInstance(cls):
@@ -131,99 +102,42 @@ class DashboardCacheManager:
         return cls._instance
 
     def __init__(self):
-        self.cache = {}
-        self.access_count = {}  # Track how often each cache entry is accessed
-        self.last_cleanup = time.time()
-        
-        # Initialize cleanup timer
-        self.cleanup_timer = QTimer()
-        self.cleanup_timer.timeout.connect(self._cleanup_cache)
-        self.cleanup_timer.start(self.CLEANUP_INTERVAL)
+        self.cache = {
+            'branches': {'data': None, 'timestamp': 0},
+            'transactions': {'data': None, 'timestamp': 0},
+            'users': {'data': None, 'timestamp': 0},
+            'financial': {'data': None, 'timestamp': 0},
+            'activity': {'data': None, 'timestamp': 0}
+        }
 
-    def get(self, key, default=None):
-        """Get cached data if valid and update access count"""
+    def get(self, key):
+        """Get cached data if valid"""
         entry = self.cache.get(key)
         if entry and time.time() - entry['timestamp'] < self.CACHE_TIMEOUT:
-            self.access_count[key] = self.access_count.get(key, 0) + 1
             return entry['data']
-        return default
+        return None
 
-    def set(self, key, data, priority=False):
-        """Set cache data with optional priority flag"""
-        # Check if we need to cleanup before adding new entry
-        if len(self.cache) >= self.MAX_CACHE_SIZE:
-            self._cleanup_cache()
-            
+    def set(self, key, data):
+        """Set cache data"""
         self.cache[key] = {
             'data': data,
-            'timestamp': time.time(),
-            'priority': priority
+            'timestamp': time.time()
         }
-        self.access_count[key] = self.access_count.get(key, 0) + 1
 
     def clear(self, key=None):
         """Clear specific or all cache entries"""
         if key:
             if key in self.cache:
-                del self.cache[key]
-                if key in self.access_count:
-                    del self.access_count[key]
+                self.cache[key] = {'data': None, 'timestamp': 0}
         else:
-            self.cache.clear()
-            self.access_count.clear()
-
-    def _cleanup_cache(self):
-        """Clean up old and unused cache entries"""
-        current_time = time.time()
-        
-        # Remove expired entries
-        expired_keys = [
-            key for key, entry in self.cache.items()
-            if current_time - entry['timestamp'] > self.CACHE_TIMEOUT
-        ]
-        for key in expired_keys:
-            del self.cache[key]
-            if key in self.access_count:
-                del self.access_count[key]
-        
-        # If still too many entries, remove least accessed non-priority entries
-        if len(self.cache) >= self.MAX_CACHE_SIZE:
-            # Sort entries by access count and priority
-            sorted_entries = sorted(
-                self.cache.items(),
-                key=lambda x: (x[1]['priority'], self.access_count.get(x[0], 0))
-            )
-            
-            # Remove entries until we're under the limit
-            entries_to_remove = len(self.cache) - int(self.MAX_CACHE_SIZE * 0.8)  # Keep 80% of max
-            for key, _ in sorted_entries[:entries_to_remove]:
-                if not self.cache[key]['priority']:  # Don't remove priority entries
-                    del self.cache[key]
-                    if key in self.access_count:
-                        del self.access_count[key]
-        
-        self.last_cleanup = current_time
-
-    def get_cache_stats(self):
-        """Get cache statistics"""
-        return {
-            'total_entries': len(self.cache),
-            'max_size': self.MAX_CACHE_SIZE,
-            'timeout': self.CACHE_TIMEOUT,
-            'last_cleanup': self.last_cleanup
-        }
-
-    def __del__(self):
-        """Cleanup when the cache manager is destroyed"""
-        if hasattr(self, 'cleanup_timer'):
-            self.cleanup_timer.stop()
+            for k in self.cache:
+                self.cache[k] = {'data': None, 'timestamp': 0}
 
 class DataLoadThread(QThread):
-    """Thread for loading dashboard data asynchronously with improved management"""
+    """Thread for loading dashboard data asynchronously"""
     data_loaded = pyqtSignal(dict)
     error_occurred = pyqtSignal(str)
     progress_updated = pyqtSignal(str)
-    progress_value = pyqtSignal(int)  # New signal for numeric progress
     
     def __init__(self, api_url, token, load_type='all'):
         super().__init__()
@@ -231,156 +145,64 @@ class DataLoadThread(QThread):
         self.token = token
         self.load_type = load_type
         self.cache_manager = DashboardCacheManager.getInstance()
-        self._is_running = True
-        self._retry_count = 0
-        self.MAX_RETRIES = 3
-        self.RETRY_DELAY = 1000  # 1 second
         
     def run(self):
-        """Main thread execution with improved error handling and progress tracking"""
         try:
-            self._is_running = True
             self.progress_updated.emit("جاري تحميل البيانات...")
-            self.progress_value.emit(0)
-            
             headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
-            loaded_data = {}
             
             if self.load_type == 'all' or self.load_type == 'basic':
-                # Load basic stats with progress tracking
-                self.progress_updated.emit("جاري تحميل الإحصائيات الأساسية...")
-                self.progress_value.emit(10)
-                
-                # Try cache first
+                # Load basic stats from cache first
                 cached_stats = self.cache_manager.get('basic_stats')
                 if cached_stats:
-                    loaded_data["basic_stats"] = cached_stats
-                    self.progress_value.emit(30)
-                else:
-                    # Load basic stats in parallel with timeout
-                    responses = self._make_parallel_requests([
-                        ('branches', f"{self.api_url}/branches/stats/"),
-                        ('users', f"{self.api_url}/users/stats/"),
-                        ('financial', f"{self.api_url}/financial/total/")
-                    ], headers)
-                    
-                    combined_stats = {}
-                    for key, response in responses.items():
-                        if response and response.status_code == 200:
-                            combined_stats.update(response.json())
-                    
-                    self.cache_manager.set('basic_stats', combined_stats, priority=True)
-                    loaded_data["basic_stats"] = combined_stats
-                    self.progress_value.emit(30)
+                    self.data_loaded.emit({"basic_stats": cached_stats})
+                    return
+
+                # Load basic stats in parallel
+                responses = {
+                    'branches': requests.get(f"{self.api_url}/branches/stats/", headers=headers),
+                    'users': requests.get(f"{self.api_url}/users/stats/", headers=headers),
+                    'financial': requests.get(f"{self.api_url}/financial/total/", headers=headers)
+                }
+                
+                combined_stats = {}
+                for key, response in responses.items():
+                    if response.status_code == 200:
+                        combined_stats.update(response.json())
+                
+                self.cache_manager.set('basic_stats', combined_stats)
+                self.data_loaded.emit({"basic_stats": combined_stats})
 
             if self.load_type == 'all' or self.load_type == 'transactions':
-                if not self._is_running:
-                    return
-                    
-                self.progress_updated.emit("جاري تحميل التحويلات...")
-                self.progress_value.emit(40)
-                
-                # Try cache first
+                # Load transactions from cache first
                 cached_transactions = self.cache_manager.get('transactions')
                 if cached_transactions:
-                    loaded_data["transactions"] = cached_transactions
-                    self.progress_value.emit(60)
-                else:
-                    response = self._make_request(f"{self.api_url}/transactions/", headers)
-                    if response and response.status_code == 200:
-                        transactions = response.json().get("transactions", [])
-                        self.cache_manager.set('transactions', transactions)
-                        loaded_data["transactions"] = transactions
-                        self.progress_value.emit(60)
+                    self.data_loaded.emit({"transactions": cached_transactions})
+                    return
+
+                # Load transactions
+                response = requests.get(f"{self.api_url}/transactions/", headers=headers)
+                if response.status_code == 200:
+                    transactions = response.json().get("transactions", [])
+                    self.cache_manager.set('transactions', transactions)
+                    self.data_loaded.emit({"transactions": transactions})
 
             if self.load_type == 'all' or self.load_type == 'activity':
-                if not self._is_running:
-                    return
-                    
-                self.progress_updated.emit("جاري تحميل النشاطات...")
-                self.progress_value.emit(70)
-                
-                # Try cache first
+                # Load activity from cache first
                 cached_activity = self.cache_manager.get('activity')
                 if cached_activity:
-                    loaded_data["activity"] = cached_activity
-                    self.progress_value.emit(90)
-                else:
-                    response = self._make_request(f"{self.api_url}/activity/", headers)
-                    if response and response.status_code == 200:
-                        activity = response.json().get("activities", [])
-                        self.cache_manager.set('activity', activity)
-                        loaded_data["activity"] = activity
-                        self.progress_value.emit(90)
+                    self.data_loaded.emit({"activity": cached_activity})
+                    return
 
-            if self._is_running:
-                self.progress_updated.emit("تم تحميل البيانات بنجاح")
-                self.progress_value.emit(100)
-                self.data_loaded.emit(loaded_data)
-                
-        except Exception as e:
-            self._handle_error(e)
-            
-    def _make_request(self, url, headers, timeout=10):
-        """Make a single request with retry logic"""
-        for attempt in range(self.MAX_RETRIES):
-            try:
-                response = requests.get(url, headers=headers, timeout=timeout)
+                # Load activity
+                response = requests.get(f"{self.api_url}/activity/", headers=headers)
                 if response.status_code == 200:
-                    return response
-                elif response.status_code == 429:  # Too Many Requests
-                    time.sleep(self.RETRY_DELAY * (attempt + 1))
-                else:
-                    self.error_occurred.emit(f"خطأ في الطلب: {response.status_code}")
-                    return None
-            except requests.exceptions.RequestException as e:
-                if attempt < self.MAX_RETRIES - 1:
-                    time.sleep(self.RETRY_DELAY * (attempt + 1))
-                else:
-                    self.error_occurred.emit(f"خطأ في الاتصال: {str(e)}")
-                    return None
-        return None
-        
-    def _make_parallel_requests(self, requests_list, headers):
-        """Make multiple requests in parallel"""
-        responses = {}
-        threads = []
-        
-        def make_request(key, url):
-            responses[key] = self._make_request(url, headers)
-            
-        for key, url in requests_list:
-            thread = threading.Thread(target=make_request, args=(key, url))
-            threads.append(thread)
-            thread.start()
-            
-        for thread in threads:
-            thread.join()
-            
-        return responses
-        
-    def _handle_error(self, error):
-        """Handle errors with proper cleanup"""
-        error_msg = str(error)
-        if isinstance(error, requests.exceptions.RequestException):
-            error_msg = f"خطأ في الاتصال: {error_msg}"
-        elif isinstance(error, ValueError):
-            error_msg = f"خطأ في البيانات: {error_msg}"
-        else:
-            error_msg = f"خطأ غير متوقع: {error_msg}"
-            
-        self.error_occurred.emit(error_msg)
-        self.progress_updated.emit("فشل تحميل البيانات")
-        self.progress_value.emit(0)
-        
-    def stop(self):
-        """Safely stop the thread"""
-        self._is_running = False
-        self.wait()  # Wait for thread to finish
-        
-    def __del__(self):
-        """Cleanup when thread is destroyed"""
-        self.stop()
+                    activity = response.json().get("activities", [])
+                    self.cache_manager.set('activity', activity)
+                    self.data_loaded.emit({"activity": activity})
+
+        except Exception as e:
+            self.error_occurred.emit(f"خطأ في تحميل البيانات: {str(e)}")
 
 class ChartManager:
     """Manages efficient chart updates and statistics visualization"""
@@ -633,128 +455,25 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
         self.tab_manager.process_preload_queue()
     
     def on_tab_changed(self, index):
-        """Handle tab change with improved loading and caching"""
-        if index == self._current_tab:
+        """Handle tab change with improved loading"""
+        current_tab = self.tabs.widget(index)
+        if not current_tab:
             return
             
-        self._current_tab = index
-        current_tab = self.tabs.widget(index)
+        tab_name = current_tab.objectName()
         
-        # Show loading indicator immediately
+        # Show loading indicator
         self.show_loading(current_tab, True)
         
-        # Use QTimer to delay loading and prevent UI freeze
-        QTimer.singleShot(100, lambda: self._load_tab_data(index))
+        # Load current tab data
+        self.tab_manager.load_tab_data(tab_name)
         
-    def _load_tab_data(self, index):
-        """Load data for specific tab with improved performance"""
-        try:
-            current_tab = self.tabs.widget(index)
-            if not current_tab:
-                return
-                
-            # Check cache first
-            cache_key = f'tab_{index}_data'
-            cached_data = self.cache_manager.get(cache_key)
-            
-            if cached_data:
-                self._update_tab_ui(index, cached_data)
-                self.show_loading(current_tab, False)
-                return
-                
-            # Load data in background
-            self.load_thread = DataLoadThread(self.api_url, self.token)
-            
-            if index == 0:  # Dashboard
-                self.load_thread.load_type = 'basic'
-                self.load_thread.data_loaded.connect(
-                    lambda data: self._handle_dashboard_data(data, current_tab)
-                )
-            elif index == 1:  # Branches
-                self.load_thread.load_type = 'branches'
-                self.load_thread.data_loaded.connect(
-                    lambda data: self._handle_branches_data(data, current_tab)
-                )
-            elif index == 2:  # Employees
-                self.load_thread.load_type = 'employees'
-                self.load_thread.data_loaded.connect(
-                    lambda data: self._handle_employees_data(data, current_tab)
-                )
-            elif index == 3:  # Transactions
-                self.load_thread.load_type = 'transactions'
-                self.load_thread.data_loaded.connect(
-                    lambda data: self._handle_transactions_data(data, current_tab)
-                )
-                
-            self.load_thread.error_occurred.connect(
-                lambda error: self._handle_load_error(error, current_tab)
-            )
-            self.load_thread.progress_updated.connect(
-                lambda msg: self.statusBar().showMessage(msg)
-            )
-            self.load_thread.start()
-            
-        except Exception as e:
-            print(f"Error loading tab data: {e}")
-            self.show_loading(current_tab, False)
-            self.statusBar().showMessage(f"خطأ في تحميل البيانات: {str(e)}", 5000)
-            
-    def _handle_dashboard_data(self, data, tab):
-        """Handle loaded dashboard data"""
-        try:
-            self._update_tab_ui(0, data)
-            self.cache_manager.set('tab_0_data', data)
-        finally:
-            self.show_loading(tab, False)
-            
-    def _handle_branches_data(self, data, tab):
-        """Handle loaded branches data"""
-        try:
-            self._update_tab_ui(1, data)
-            self.cache_manager.set('tab_1_data', data)
-        finally:
-            self.show_loading(tab, False)
-            
-    def _handle_employees_data(self, data, tab):
-        """Handle loaded employees data"""
-        try:
-            self._update_tab_ui(2, data)
-            self.cache_manager.set('tab_2_data', data)
-        finally:
-            self.show_loading(tab, False)
-            
-    def _handle_transactions_data(self, data, tab):
-        """Handle loaded transactions data"""
-        try:
-            self._update_tab_ui(3, data)
-            self.cache_manager.set('tab_3_data', data)
-        finally:
-            self.show_loading(tab, False)
-            
-    def _handle_load_error(self, error, tab):
-        """Handle loading errors"""
-        self.show_loading(tab, False)
-        self.statusBar().showMessage(f"خطأ في تحميل البيانات: {error}", 5000)
-        
-    def _update_tab_ui(self, index, data):
-        """Update UI for specific tab"""
-        if index == 0:  # Dashboard
-            self.update_basic_stats(data)
-        elif index == 1:  # Branches
-            self.update_branches_table(data)
-        elif index == 2:  # Employees
-            self.update_employees_table(data)
-        elif index == 3:  # Transactions
-            self.update_transactions_table(data)
-        elif index == 4:  # Money Transfer
-            self.load_money_transfer_details()
-        elif index == 5:  # Reports
-            self.load_reports_details()
-        elif index == 6:  # Inventory
-            self.load_inventory_details()
-        elif index == 7:  # Settings
-            self.load_settings_details()
-
+        # Preload next tab data
+        next_index = (index + 1) % self.tabs.count()
+        next_tab = self.tabs.widget(next_index)
+        if next_tab:
+            self.tab_manager.preload_tab_data(next_tab.objectName())
+    
     def handle_loaded_data(self, data):
         """Handle loaded data with loading indicators"""
         try:
@@ -3086,524 +2805,3 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
     def refresh_employees(self):
         self._employees_cache = None
         self.load_employees()
-
-class AsyncOperationManager:
-    """Manages concurrent operations with advanced loading indicators"""
-    
-    def __init__(self, parent=None):
-        self.parent = parent
-        self.operations = {}
-        self.loading_overlays = {}
-        self.operation_timers = {}
-        self.operation_stats = {}
-        
-    def create_loading_overlay(self, widget, message="جاري التحميل..."):
-        """Create a loading overlay for a widget"""
-        overlay = QWidget(widget)
-        overlay.setGeometry(widget.rect())
-        overlay.setStyleSheet("""
-            QWidget {
-                background-color: rgba(255, 255, 255, 0.8);
-                border-radius: 10px;
-            }
-        """)
-        
-        layout = QVBoxLayout(overlay)
-        
-        # Spinner
-        spinner = QLabel()
-        movie = QMovie("assets/icons/loading.gif")
-        spinner.setMovie(movie)
-        movie.start()
-        layout.addWidget(spinner, alignment=Qt.AlignmentFlag.AlignCenter)
-        
-        # Message
-        message_label = QLabel(message)
-        message_label.setStyleSheet("""
-            QLabel {
-                color: #2c3e50;
-                font-size: 14px;
-                font-weight: bold;
-            }
-        """)
-        layout.addWidget(message_label, alignment=Qt.AlignmentFlag.AlignCenter)
-        
-        # Progress bar
-        progress = QProgressBar()
-        progress.setStyleSheet("""
-            QProgressBar {
-                border: 2px solid #bdc3c7;
-                border-radius: 5px;
-                text-align: center;
-                background-color: #ecf0f1;
-            }
-            QProgressBar::chunk {
-                background-color: #3498db;
-                border-radius: 3px;
-            }
-        """)
-        progress.setMaximum(100)
-        progress.setValue(0)
-        layout.addWidget(progress)
-        
-        overlay.hide()
-        return overlay
-        
-    def start_operation(self, operation_id, widget, message="جاري التحميل..."):
-        """Start a new operation with loading indicator"""
-        if operation_id in self.operations:
-            return False
-            
-        # Create loading overlay if not exists
-        if widget not in self.loading_overlays:
-            self.loading_overlays[widget] = self.create_loading_overlay(widget)
-            
-        overlay = self.loading_overlays[widget]
-        overlay.show()
-        overlay.raise_()
-        
-        # Initialize operation stats
-        self.operation_stats[operation_id] = {
-            'start_time': time.time(),
-            'progress': 0,
-            'status': 'running'
-        }
-        
-        # Start progress timer
-        timer = QTimer()
-        timer.timeout.connect(lambda: self._update_progress(operation_id, overlay))
-        timer.start(100)  # Update every 100ms
-        self.operation_timers[operation_id] = timer
-        
-        return True
-        
-    def _update_progress(self, operation_id, overlay):
-        """Update operation progress"""
-        if operation_id not in self.operation_stats:
-            return
-            
-        stats = self.operation_stats[operation_id]
-        elapsed = time.time() - stats['start_time']
-        
-        # Update progress based on elapsed time
-        if elapsed < 1:  # First second
-            progress = min(30, int(elapsed * 30))
-        elif elapsed < 3:  # Next 2 seconds
-            progress = min(60, 30 + int((elapsed - 1) * 15))
-        else:  # After 3 seconds
-            progress = min(90, 60 + int((elapsed - 3) * 10))
-            
-        stats['progress'] = progress
-        
-        # Update progress bar
-        progress_bar = overlay.findChild(QProgressBar)
-        if progress_bar:
-            progress_bar.setValue(progress)
-            
-    def complete_operation(self, operation_id, widget, success=True):
-        """Complete an operation and update UI"""
-        if operation_id not in self.operations:
-            return
-            
-        # Stop progress timer
-        if operation_id in self.operation_timers:
-            self.operation_timers[operation_id].stop()
-            del self.operation_timers[operation_id]
-            
-        # Update stats
-        if operation_id in self.operation_stats:
-            stats = self.operation_stats[operation_id]
-            stats['end_time'] = time.time()
-            stats['duration'] = stats['end_time'] - stats['start_time']
-            stats['status'] = 'completed' if success else 'failed'
-            stats['progress'] = 100 if success else 0
-            
-        # Hide loading overlay
-        if widget in self.loading_overlays:
-            overlay = self.loading_overlays[widget]
-            progress_bar = overlay.findChild(QProgressBar)
-            if progress_bar:
-                progress_bar.setValue(100 if success else 0)
-            QTimer.singleShot(500, overlay.hide)  # Hide after 500ms
-            
-        # Cleanup
-        if operation_id in self.operations:
-            del self.operations[operation_id]
-            
-    def get_operation_stats(self, operation_id):
-        """Get statistics for an operation"""
-        return self.operation_stats.get(operation_id, {})
-        
-    def cleanup(self):
-        """Clean up all operations and timers"""
-        for timer in self.operation_timers.values():
-            timer.stop()
-        self.operation_timers.clear()
-        self.operations.clear()
-        self.operation_stats.clear()
-        for overlay in self.loading_overlays.values():
-            overlay.hide()
-        self.loading_overlays.clear()
-
-class ConcurrentDataLoader:
-    """Handles concurrent data loading operations"""
-    
-    def __init__(self, parent=None):
-        self.parent = parent
-        self.operation_manager = AsyncOperationManager(parent)
-        self.thread_pool = QThreadPool()
-        self.thread_pool.setMaxThreadCount(4)  # Limit concurrent threads
-        
-    def load_data(self, operation_id, widget, data_type, callback=None):
-        """Load data concurrently with progress tracking"""
-        if not self.operation_manager.start_operation(operation_id, widget):
-            return False
-            
-        # Create worker
-        worker = DataLoadWorker(
-            self.parent.api_url,
-            self.parent.token,
-            data_type
-        )
-        
-        # Connect signals
-        worker.data_loaded.connect(
-            lambda data: self._handle_data_loaded(operation_id, widget, data, callback)
-        )
-        worker.error_occurred.connect(
-            lambda error: self._handle_error(operation_id, widget, error)
-        )
-        worker.progress_updated.connect(
-            lambda progress: self._update_progress(operation_id, progress)
-        )
-        
-        # Start worker in thread pool
-        self.thread_pool.start(worker)
-        return True
-        
-    def _handle_data_loaded(self, operation_id, widget, data, callback):
-        """Handle loaded data"""
-        self.operation_manager.complete_operation(operation_id, widget, True)
-        if callback:
-            callback(data)
-            
-    def _handle_error(self, operation_id, widget, error):
-        """Handle loading error"""
-        self.operation_manager.complete_operation(operation_id, widget, False)
-        if self.parent:
-            self.parent.statusBar().showMessage(f"خطأ: {error}", 5000)
-            
-    def _update_progress(self, operation_id, progress):
-        """Update operation progress"""
-        if operation_id in self.operation_manager.operation_stats:
-            self.operation_manager.operation_stats[operation_id]['progress'] = progress
-            
-    def cleanup(self):
-        """Clean up resources"""
-        self.operation_manager.cleanup()
-        self.thread_pool.waitForDone()
-
-class DataLoadWorker(QRunnable):
-    """Worker for data loading operations"""
-    
-    def __init__(self, api_url, token, data_type):
-        super().__init__()
-        self.api_url = api_url
-        self.token = token
-        self.data_type = data_type
-        self.signals = DataLoadSignals()
-        
-    def run(self):
-        """Execute the data loading operation"""
-        try:
-            self.signals.progress_updated.emit(10)
-            headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
-            
-            if self.data_type == 'basic':
-                self._load_basic_data(headers)
-            elif self.data_type == 'transactions':
-                self._load_transactions(headers)
-            elif self.data_type == 'activity':
-                self._load_activity(headers)
-                
-            self.signals.progress_updated.emit(100)
-            
-        except Exception as e:
-            self.signals.error_occurred.emit(str(e))
-            
-    def _load_basic_data(self, headers):
-        """Load basic dashboard data"""
-        self.signals.progress_updated.emit(20)
-        
-        # Load data in parallel
-        responses = {}
-        threads = []
-        
-        def load_endpoint(endpoint, key):
-            try:
-                response = requests.get(f"{self.api_url}/{endpoint}", headers=headers)
-                if response.status_code == 200:
-                    responses[key] = response.json()
-            except Exception as e:
-                print(f"Error loading {endpoint}: {e}")
-                
-        # Start threads for each endpoint
-        endpoints = [
-            ('branches/stats/', 'branches'),
-            ('users/stats/', 'users'),
-            ('financial/total/', 'financial')
-        ]
-        
-        for endpoint, key in endpoints:
-            thread = threading.Thread(target=load_endpoint, args=(endpoint, key))
-            threads.append(thread)
-            thread.start()
-            
-        # Wait for all threads
-        for thread in threads:
-            thread.join()
-            
-        self.signals.progress_updated.emit(80)
-        self.signals.data_loaded.emit(responses)
-        
-    def _load_transactions(self, headers):
-        """Load transactions data"""
-        self.signals.progress_updated.emit(30)
-        
-        response = requests.get(f"{self.api_url}/transactions/", headers=headers)
-        if response.status_code == 200:
-            self.signals.progress_updated.emit(80)
-            self.signals.data_loaded.emit(response.json())
-        else:
-            raise Exception(f"Failed to load transactions: {response.status_code}")
-            
-    def _load_activity(self, headers):
-        """Load activity data"""
-        self.signals.progress_updated.emit(30)
-        
-        response = requests.get(f"{self.api_url}/activity/", headers=headers)
-        if response.status_code == 200:
-            self.signals.progress_updated.emit(80)
-            self.signals.data_loaded.emit(response.json())
-        else:
-            raise Exception(f"Failed to load activity: {response.status_code}")
-
-class DataLoadSignals(QObject):
-    """Signals for data loading operations"""
-    data_loaded = pyqtSignal(dict)
-    error_occurred = pyqtSignal(str)
-    progress_updated = pyqtSignal(int)
-
-class DashboardApp(QMainWindow):
-    def __init__(self, api_url, token):
-        super().__init__()
-        self.api_url = api_url
-        self.token = token
-        self.cache_manager = DashboardCacheManager.getInstance()
-        self.concurrent_loader = ConcurrentDataLoader(self)
-        self.setup_ui()
-        
-    def setup_ui(self):
-        """Setup the main UI with improved loading indicators"""
-        self.setWindowTitle("لوحة التحكم")
-        self.setGeometry(100, 100, 1200, 800)
-        
-        # Create central widget and layout
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-        layout = QVBoxLayout(central_widget)
-        
-        # Create tab widget
-        self.tab_widget = QTabWidget()
-        layout.addWidget(self.tab_widget)
-        
-        # Create tabs
-        self.setup_dashboard_tab()
-        self.setup_transactions_tab()
-        self.setup_activity_tab()
-        
-        # Create status bar
-        self.statusBar().showMessage("جاهز")
-        
-        # Load initial data
-        self.load_initial_data()
-        
-    def load_initial_data(self):
-        """Load initial data with improved loading indicators"""
-        # Load basic stats
-        self.concurrent_loader.load_data(
-            'basic_stats',
-            self.tab_widget.widget(0),  # Dashboard tab
-            'basic',
-            self.update_basic_stats
-        )
-        
-        # Load transactions
-        self.concurrent_loader.load_data(
-            'transactions',
-            self.tab_widget.widget(1),  # Transactions tab
-            'transactions',
-            self.update_transactions
-        )
-        
-        # Load activity
-        self.concurrent_loader.load_data(
-            'activity',
-            self.tab_widget.widget(2),  # Activity tab
-            'activity',
-            self.update_activity
-        )
-        
-    def update_basic_stats(self, data):
-        """Update basic stats with loaded data"""
-        if not data:
-            return
-            
-        # Update branches stats
-        if 'branches' in data:
-            branches_stats = data['branches']
-            self.update_stat_card('branches', {
-                'total': branches_stats.get('total', 0),
-                'active': branches_stats.get('active', 0),
-                'inactive': branches_stats.get('inactive', 0)
-            })
-            
-        # Update users stats
-        if 'users' in data:
-            users_stats = data['users']
-            self.update_stat_card('users', {
-                'total': users_stats.get('total', 0),
-                'active': users_stats.get('active', 0),
-                'inactive': users_stats.get('inactive', 0)
-            })
-            
-        # Update financial stats
-        if 'financial' in data:
-            financial_stats = data['financial']
-            self.update_stat_card('financial', {
-                'total': financial_stats.get('total', 0),
-                'today': financial_stats.get('today', 0),
-                'month': financial_stats.get('month', 0)
-            })
-            
-    def update_stat_card(self, stat_type, data):
-        """Update a stat card with new data"""
-        card = getattr(self, f'{stat_type}_card', None)
-        if not card:
-            return
-            
-        # Update main value
-        value_label = card.findChild(QLabel, "", Qt.FindChildOption.FindChildrenRecursively)[1]
-        if value_label:
-            value_label.setText(f"{data['total']:,}")
-            
-        # Update sub-values if they exist
-        for key, value in data.items():
-            if key != 'total':
-                sub_label = card.findChild(QLabel, key)
-                if sub_label:
-                    sub_label.setText(f"{value:,}")
-                    
-    def update_transactions(self, data):
-        """Update transactions with loaded data"""
-        if not data or 'transactions' not in data:
-            return
-            
-        transactions = data['transactions']
-        
-        # Update transactions table
-        table = self.tab_widget.widget(1).findChild(QTableWidget)
-        if table:
-            table.setRowCount(len(transactions))
-            for i, transaction in enumerate(transactions):
-                self.update_transaction_row(table, i, transaction)
-                
-        # Update transactions stats
-        self.update_stat_card('transactions', {
-            'total': len(transactions),
-            'today': sum(1 for t in transactions if t.get('date') == datetime.now().date().isoformat()),
-            'month': sum(1 for t in transactions if t.get('date', '').startswith(datetime.now().strftime('%Y-%m')))
-        })
-        
-    def update_transaction_row(self, table, row, transaction):
-        """Update a single transaction row in the table"""
-        # ID
-        table.setItem(row, 0, QTableWidgetItem(str(transaction.get('id', ''))))
-        
-        # Date
-        date = transaction.get('date', '')
-        if date:
-            date = datetime.fromisoformat(date).strftime('%Y-%m-%d %H:%M')
-        table.setItem(row, 1, QTableWidgetItem(date))
-        
-        # Amount
-        amount = transaction.get('amount', 0)
-        table.setItem(row, 2, QTableWidgetItem(f"{amount:,.2f}"))
-        
-        # Status
-        status = transaction.get('status', '')
-        status_item = QTableWidgetItem(status)
-        status_item.setForeground(self.get_status_color(status))
-        table.setItem(row, 3, status_item)
-        
-    def get_status_color(self, status):
-        """Get color for transaction status"""
-        colors = {
-            'completed': QColor('#27ae60'),
-            'pending': QColor('#f39c12'),
-            'failed': QColor('#c0392b')
-        }
-        return colors.get(status.lower(), QColor('#7f8c8d'))
-        
-    def update_activity(self, data):
-        """Update activity with loaded data"""
-        if not data or 'activities' not in data:
-            return
-            
-        activities = data['activities']
-        
-        # Update activity list
-        list_widget = self.tab_widget.widget(2).findChild(QListWidget)
-        if list_widget:
-            list_widget.clear()
-            for activity in activities:
-                self.add_activity_item(list_widget, activity)
-                
-    def add_activity_item(self, list_widget, activity):
-        """Add an activity item to the list"""
-        item = QListWidgetItem()
-        
-        # Create activity widget
-        widget = QWidget()
-        layout = QHBoxLayout(widget)
-        
-        # Icon
-        icon_label = QLabel()
-        icon = QIcon(f"assets/icons/{activity.get('type', 'default')}.png")
-        icon_label.setPixmap(icon.pixmap(24, 24))
-        layout.addWidget(icon_label)
-        
-        # Text
-        text = f"{activity.get('user', '')} - {activity.get('action', '')}"
-        text_label = QLabel(text)
-        layout.addWidget(text_label)
-        
-        # Time
-        time = activity.get('time', '')
-        if time:
-            time = datetime.fromisoformat(time).strftime('%H:%M')
-        time_label = QLabel(time)
-        time_label.setStyleSheet("color: #7f8c8d;")
-        layout.addWidget(time_label)
-        
-        layout.addStretch()
-        widget.setLayout(layout)
-        
-        item.setSizeHint(widget.sizeHint())
-        list_widget.addItem(item)
-        list_widget.setItemWidget(item, widget)
-        
-    def closeEvent(self, event):
-        """Clean up resources when closing"""
-        self.concurrent_loader.cleanup()
-        super().closeEvent(event)
