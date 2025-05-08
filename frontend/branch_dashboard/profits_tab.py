@@ -151,8 +151,8 @@ class ProfitsTabMixin:
         # Set the layout
         self.profits_tab.setLayout(layout)
         
-        # Load initial data
-        self.load_profits_data()
+        # لا تحميل تلقائي للبيانات هنا
+        # self.load_profits_data()  # تم التعليق أو الإزالة
     
     def load_profits_data(self):
         """Load profits data from the server using the new endpoints."""
