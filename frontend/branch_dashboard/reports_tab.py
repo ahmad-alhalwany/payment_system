@@ -51,15 +51,24 @@ class ReportsTabMixin:
         
     def generate_transfer_report(self):
         """Generate transfer report with accurate filtering and sorting"""
+        if getattr(self, '_is_loading_report', False):
+            return  # منع التكرار
+        self._is_loading_report = True
         try:
             # Clear previous data and initialize
-            self.transfer_report_table.setRowCount(0)
+            self.transfer_report_table.setRowCount(1)
+            loading_item = QTableWidgetItem("جاري التحميل ...")
+            loading_item.setForeground(Qt.GlobalColor.blue)
+            self.transfer_report_table.setItem(0, 0, loading_item)
+            for col in range(1, self.transfer_report_table.columnCount()):
+                self.transfer_report_table.setItem(0, col, QTableWidgetItem(""))
             self.statusBar().showMessage("جاري تحميل التقرير...")
             QApplication.processEvents()
 
             # Validate date selection
             if self.report_date_from.date() > self.report_date_to.date():
                 QMessageBox.warning(self, "خطأ في التاريخ", "تاريخ البداية يجب أن يكون قبل تاريخ النهاية")
+                self._is_loading_report = False
                 return
 
             # Format dates for backend requests (without time)
@@ -105,6 +114,8 @@ class ReportsTabMixin:
                             t["transaction_type"] = "outgoing"
                         all_transactions.extend(outgoing_data.get("items", []))
                         self.report_total_pages = outgoing_data.get("total_pages", 1)
+                    else:
+                        raise Exception(f"فشل تحميل التحويلات الصادرة: {outgoing_response.status_code}")
 
                 # Fetch incoming transactions (وارد)
                 if transfer_type in ["وارد", "الكل"]:
@@ -125,9 +136,16 @@ class ReportsTabMixin:
                             self.report_total_pages = max(self.report_total_pages, incoming_data.get("total_pages", 1))
                         else:
                             self.report_total_pages = incoming_data.get("total_pages", 1)
+                    else:
+                        raise Exception(f"فشل تحميل التحويلات الواردة: {incoming_response.status_code}")
 
             except requests.exceptions.RequestException as e:
                 QMessageBox.critical(self, "خطأ", f"فشل الاتصال بالخادم: {str(e)}")
+                self._is_loading_report = False
+                return
+            except Exception as e:
+                QMessageBox.critical(self, "خطأ", str(e))
+                self._is_loading_report = False
                 return
 
             # Sort transactions by date descending
@@ -201,7 +219,7 @@ class ReportsTabMixin:
                     valid_count += 1
 
                 except Exception as field_error:
-                    logger.error(f"Error processing row {row}: {str(field_error)}")
+                    #logger.error(f"Error processing row {row}: {str(field_error)}")
                     continue
 
             # Update UI
@@ -209,8 +227,10 @@ class ReportsTabMixin:
             self.statusBar().showMessage(f"تم تحميل {valid_count} معاملة صالحة", 5000)
 
         except Exception as e:
-            logger.error(f"Error generating report: {str(e)}")
+            #logger.error(f"Error generating report: {str(e)}")
             QMessageBox.critical(self, "خطأ", f"حدث خطأ أثناء إنشاء التقرير: {str(e)}")
+        finally:
+            self._is_loading_report = False
             
     def export_transfer_report(self):
         """Export transfer report to CSV and PDF"""

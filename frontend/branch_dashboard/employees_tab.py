@@ -64,12 +64,28 @@ class EmployeesTabMixin:
         
         self.employees_tab.setLayout(layout)
         
-        # Load employees data
-        self.load_employees()
-
+        # لا تحميل تلقائي للبيانات هنا
+        self._employees_loaded = False
+        self._is_loading_employees = False
+    
+    def on_employees_tab_selected(self):
+        """تحميل بيانات الموظفين عند فتح التبويب لأول مرة فقط (lazy load)"""
+        if not getattr(self, '_employees_loaded', False):
+            self.load_employees()
+    
     def load_employees(self):
-        """Load employees data for this branch with security restrictions"""
+        """Load employees data for this branch with security restrictions, with loading indicator and prevent duplicate loads"""
+        if getattr(self, '_is_loading_employees', False):
+            return  # منع التكرار
+        self._is_loading_employees = True
         try:
+            self.employees_table.setRowCount(1)
+            loading_item = QTableWidgetItem("جاري التحميل ...")
+            loading_item.setForeground(QColor("#2980b9"))
+            self.employees_table.setItem(0, 0, loading_item)
+            for col in range(1, 5):
+                self.employees_table.setItem(0, col, QTableWidgetItem(""))
+            
             headers = {"Authorization": f"Bearer {self.token}"}
             response = requests.get(
                 f"{self.api_url}/branches/{self.branch_id}/employees/",
@@ -158,12 +174,15 @@ class EmployeesTabMixin:
                     actions_layout.addWidget(edit_button)
                     actions_layout.addWidget(delete_button)
                     self.employees_table.setCellWidget(row, 4, actions_widget)
-                    
+                self._employees_loaded = True
             else:
                 self.load_placeholder_employees()
                 QMessageBox.warning(self, "خطأ", f"فشل في تحميل البيانات: {response.status_code}")
-                
+                self._employees_loaded = False
         except Exception as e:
             print(f"Error loading employees: {e}")
             self.load_placeholder_employees()
-            QMessageBox.critical(self, "خطأ", "تعذر الاتصال بالخادم")            
+            QMessageBox.critical(self, "خطأ", "تعذر الاتصال بالخادم")
+            self._employees_loaded = False
+        finally:
+            self._is_loading_employees = False            
