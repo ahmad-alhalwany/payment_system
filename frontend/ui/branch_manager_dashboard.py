@@ -4,7 +4,7 @@ from PyQt6.QtWidgets import (
     QWidget, QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView,
     QMessageBox, QDialog, QFormLayout, QComboBox,
     QGridLayout, QPushButton, QHBoxLayout, QDateEdit, 
-    QCalendarWidget, QDialogButtonBox, QDoubleSpinBox, QTextEdit
+    QCalendarWidget, QDialogButtonBox, QDoubleSpinBox, QTextEdit, QScrollArea
 )
 from ui.change_password import ChangePasswordDialog
 from datetime import datetime
@@ -60,17 +60,11 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
         # Cache tracking variables
         self._last_financial_update = 0
         self._last_employee_stats = 0
-        self._last_transactions = 0
         self._last_branches_update = 0
         self._branches_cache = None
         self._financial_cache = None
         self._employee_stats_cache = None
-        self._transactions_cache = None
         
-        # Add timer for auto-refreshing transactions (5 minutes)
-        self.transaction_timer = QTimer(self)
-        self.transaction_timer.timeout.connect(self.load_recent_transactions)
-        self.transaction_timer.start(300000)  # 5 minutes
         
         self.setWindowTitle("لوحة تحكم مدير الفرع - نظام التحويلات المالية")
         self.setGeometry(100, 100, 1200, 800)
@@ -153,206 +147,246 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
         # Load branch info
         self.load_branches()
         self.load_branch_info()
-        
-        # Refresh data initially
-        self.refresh_dashboard_data()
-        
-        # Set up refresh timer (every 10 minutes)
-        self.refresh_timer = QTimer(self)
-        self.refresh_timer.timeout.connect(self.refresh_dashboard_data)
-        self.refresh_timer.start(600000)  # 10 minutes
+
         
         QTimer.singleShot(0, self.refresh_dashboard_data)
     
     def setup_dashboard_tab(self):
-        """Set up the main dashboard tab."""
+        """Set up the main dashboard tab with a modern and efficient design."""
         layout = QVBoxLayout()
+        layout.setSpacing(20)  # Increased spacing between groups
         
-        # Welcome message
+        # Create a scroll area to handle overflow
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        
+        # Create a container widget for the scroll area
+        container = QWidget()
+        container_layout = QVBoxLayout(container)
+        container_layout.setSpacing(20)
+        
+        # Welcome Section with improved styling
         welcome_group = ModernGroupBox("لوحة المعلومات", "#e74c3c")
         welcome_layout = QVBoxLayout()
+        welcome_layout.setSpacing(15)
         
+        # Welcome message with gradient background
         welcome_label = QLabel("مرحباً بك في لوحة تحكم مدير الفرع")
-        welcome_label.setFont(QFont("Arial", 16, QFont.Weight.Bold))
+        welcome_label.setFont(QFont("Arial", 20, QFont.Weight.Bold))
         welcome_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        welcome_label.setStyleSheet("color: #2c3e50; margin: 10px 0;")
+        welcome_label.setWordWrap(True)  # Enable word wrapping
+        welcome_label.setStyleSheet("""
+            color: #2c3e50;
+            margin: 15px 0;
+            padding: 15px;
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:0, 
+                                      stop:0 #e74c3c, stop:1 #c0392b);
+            color: white;
+            border-radius: 10px;
+        """)
         welcome_layout.addWidget(welcome_label)
         
+        # Branch info with improved styling
         self.branch_name_label = QLabel("الفرع: جاري التحميل...")
+        self.branch_name_label.setFont(QFont("Arial", 16))
         self.branch_name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.branch_name_label.setWordWrap(True)  # Enable word wrapping
+        self.branch_name_label.setStyleSheet("""
+            color: #34495e;
+            margin: 10px 0;
+            padding: 10px;
+            background-color: rgba(255, 255, 255, 0.9);
+            border-radius: 8px;
+        """)
         welcome_layout.addWidget(self.branch_name_label)
         
+        # Current date with improved styling
         date_label = QLabel("تاريخ اليوم: جاري التحميل...")
+        date_label.setFont(QFont("Arial", 16))
         date_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        date_label.setWordWrap(True)  # Enable word wrapping
+        date_label.setStyleSheet("""
+            color: #34495e;
+            margin: 10px 0;
+            padding: 10px;
+            background-color: rgba(255, 255, 255, 0.9);
+            border-radius: 8px;
+        """)
         welcome_layout.addWidget(date_label)
         self.date_label = date_label
         
         welcome_group.setLayout(welcome_layout)
-        layout.addWidget(welcome_group)
+        container_layout.addWidget(welcome_group)
         
-        
-        # Financial Status Group
+        # Financial Status Section with improved styling
         financial_group = ModernGroupBox("الحالة المالية", "#27ae60")
         financial_layout = QGridLayout()
-        
-        # Reduce vertical spacing
-        financial_layout.setVerticalSpacing(8)  # Reduced from default 20-25
-        financial_layout.setContentsMargins(10, 10, 10, 10)  # Tighter margins
+        financial_layout.setVerticalSpacing(20)
+        financial_layout.setContentsMargins(20, 20, 20, 20)
 
-        # Syrian Pounds Balance
+        # Syrian Pounds Balance with improved styling
+        syp_label = QLabel("الرصيد المتاح (ل.س)")
+        syp_label.setFont(QFont("Arial", 14, QFont.Weight.Bold))
+        syp_label.setStyleSheet("color: #2c3e50;")
+        syp_label.setWordWrap(True)  # Enable word wrapping
+        financial_layout.addWidget(syp_label, 0, 0)
+        
         self.syp_balance_label = QLabel("جاري التحميل...")
-        self.syp_balance_label.setFont(QFont("Arial", 12, QFont.Weight.Bold))
-        self.syp_balance_label.setStyleSheet("color: #2ecc71;")
-        financial_layout.addWidget(QLabel("الرصيد المتاح (ل.س):"), 0, 0)
+        self.syp_balance_label.setFont(QFont("Arial", 16, QFont.Weight.Bold))
+        self.syp_balance_label.setWordWrap(True)  # Enable word wrapping
+        self.syp_balance_label.setStyleSheet("""
+            color: #2ecc71;
+            padding: 15px;
+            background-color: rgba(46, 204, 113, 0.1);
+            border-radius: 10px;
+            border: 2px solid #2ecc71;
+        """)
         financial_layout.addWidget(self.syp_balance_label, 0, 1)
 
-        # US Dollars Balance
+        # US Dollars Balance with improved styling
+        usd_label = QLabel("الرصيد المتاح ($)")
+        usd_label.setFont(QFont("Arial", 14, QFont.Weight.Bold))
+        usd_label.setStyleSheet("color: #2c3e50;")
+        usd_label.setWordWrap(True)  # Enable word wrapping
+        financial_layout.addWidget(usd_label, 1, 0)
+        
         self.usd_balance_label = QLabel("جاري التحميل...")
-        self.usd_balance_label.setFont(QFont("Arial", 12, QFont.Weight.Bold))
-        self.usd_balance_label.setStyleSheet("color: #3498db;")
-        financial_layout.addWidget(QLabel("الرصيد المتاح ($):"), 1, 0)
+        self.usd_balance_label.setFont(QFont("Arial", 16, QFont.Weight.Bold))
+        self.usd_balance_label.setWordWrap(True)  # Enable word wrapping
+        self.usd_balance_label.setStyleSheet("""
+            color: #3498db;
+            padding: 15px;
+            background-color: rgba(52, 152, 219, 0.1);
+            border-radius: 10px;
+            border: 2px solid #3498db;
+        """)
         financial_layout.addWidget(self.usd_balance_label, 1, 1)
 
-        # Refresh Button
+        # Refresh Button with improved styling
         refresh_finance_btn = ModernButton("تحديث الرصيد", color="#3498db")
+        refresh_finance_btn.setFont(QFont("Arial", 14))
+        refresh_finance_btn.setMinimumHeight(50)
+        refresh_finance_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #3498db;
+                color: white;
+                border-radius: 8px;
+                padding: 10px;
+            }
+            QPushButton:hover {
+                background-color: #2980b9;
+            }
+        """)
         refresh_finance_btn.clicked.connect(self.load_financial_status)
         financial_layout.addWidget(refresh_finance_btn, 0, 2, 2, 1)
 
         financial_group.setLayout(financial_layout)
-        layout.addWidget(financial_group)
+        container_layout.addWidget(financial_group)
         
-        # Statistics
-        stats_layout = QHBoxLayout()
-        
-        # Employees stats
+        # Employee Statistics Section with improved styling
         employees_group = ModernGroupBox("إحصائيات الموظفين", "#2ecc71")
         employees_layout = QVBoxLayout()
+        employees_layout.setSpacing(15)
         
+        # Total Employees with improved styling
         self.employees_count = QLabel("عدد الموظفين: جاري التحميل...")
-        self.employees_count.setFont(QFont("Arial", 12))
+        self.employees_count.setFont(QFont("Arial", 16))
+        self.employees_count.setWordWrap(True)  # Enable word wrapping
+        self.employees_count.setStyleSheet("""
+            color: #2c3e50;
+            padding: 15px;
+            background-color: rgba(46, 204, 113, 0.1);
+            border-radius: 10px;
+            border: 2px solid #2ecc71;
+        """)
         employees_layout.addWidget(self.employees_count)
         
+        # Active Employees with improved styling
         self.active_employees = QLabel("الموظفين النشطين: جاري التحميل...")
-        self.active_employees.setFont(QFont("Arial", 12))
+        self.active_employees.setFont(QFont("Arial", 16))
+        self.active_employees.setWordWrap(True)  # Enable word wrapping
+        self.active_employees.setStyleSheet("""
+            color: #2c3e50;
+            padding: 15px;
+            background-color: rgba(46, 204, 113, 0.1);
+            border-radius: 10px;
+            border: 2px solid #2ecc71;
+        """)
         employees_layout.addWidget(self.active_employees)
         
         employees_group.setLayout(employees_layout)
-        stats_layout.addWidget(employees_group)
+        container_layout.addWidget(employees_group)
         
-        # Transactions stats
-        transactions_group = ModernGroupBox("إحصائيات التحويلات", "#e67e22")
-        transactions_layout = QGridLayout()
-        
-        self.transactions_count = QLabel("عدد التحويلات: جاري التحميل...")
-        self.transactions_count.setFont(QFont("Arial", 12))
-        transactions_layout.addWidget(self.transactions_count)
-        
-        self.transactions_amount = QLabel("إجمالي مبالغ التحويلات: جاري التحميل...")
-        self.transactions_amount.setFont(QFont("Arial", 12))
-        transactions_layout.addWidget(self.transactions_amount)
-        
-        transactions_group.setLayout(transactions_layout)
-        stats_layout.addWidget(transactions_group)
-        
-        layout.addLayout(stats_layout)
-        
-        # Quick actions
+        # Quick Actions Section with improved styling
         actions_group = ModernGroupBox("إجراءات سريعة", "#9b59b6")
         actions_layout = QHBoxLayout()
+        actions_layout.setSpacing(20)
         
+        # Add employee button with improved styling
         add_employee_button = ModernButton("إضافة موظف جديد", color="#2ecc71")
+        add_employee_button.setFont(QFont("Arial", 14))
+        add_employee_button.setMinimumHeight(60)
+        add_employee_button.setStyleSheet("""
+            QPushButton {
+                background-color: #2ecc71;
+                color: white;
+                border-radius: 8px;
+                padding: 10px;
+            }
+            QPushButton:hover {
+                background-color: #27ae60;
+            }
+        """)
         add_employee_button.clicked.connect(self.add_employee)
         actions_layout.addWidget(add_employee_button)
         
+        # Search user button with improved styling
         search_user_button = ModernButton("بحث عن مستخدم", color="#e67e22")
+        search_user_button.setFont(QFont("Arial", 14))
+        search_user_button.setMinimumHeight(60)
+        search_user_button.setStyleSheet("""
+            QPushButton {
+                background-color: #e67e22;
+                color: white;
+                border-radius: 8px;
+                padding: 10px;
+            }
+            QPushButton:hover {
+                background-color: #d35400;
+            }
+        """)
         search_user_button.clicked.connect(self.search_user)
         actions_layout.addWidget(search_user_button)
         
+        # New transfer button with improved styling
         new_transfer_button = ModernButton("تحويل جديد", color="#3498db")
+        new_transfer_button.setFont(QFont("Arial", 14))
+        new_transfer_button.setMinimumHeight(60)
+        new_transfer_button.setStyleSheet("""
+            QPushButton {
+                background-color: #3498db;
+                color: white;
+                border-radius: 8px;
+                padding: 10px;
+            }
+            QPushButton:hover {
+                background-color: #2980b9;
+            }
+        """)
         new_transfer_button.clicked.connect(self.new_transfer)
         actions_layout.addWidget(new_transfer_button)
         
         actions_group.setLayout(actions_layout)
-        layout.addWidget(actions_group)
+        container_layout.addWidget(actions_group)
         
-        # Recent transactions
-        recent_group = ModernGroupBox("أحدث التحويلات", "#3498db")
-        recent_layout = QVBoxLayout()
+        # Set the container as the scroll area's widget
+        scroll_area.setWidget(container)
         
-        self.recent_transactions_table = QTableWidget()
-        self.recent_transactions_table.setColumnCount(10)  # Ensure this matches actual columns
-        self.recent_transactions_table.setColumnCount(10)
-        self.recent_transactions_table.setHorizontalHeaderLabels([
-            "النوع", "رقم التحويل", "المرسل", "المستلم", "المبلغ", 
-            "التاريخ", "الحالة", "الفرع المرسل", "الفرع المستلم", "اسم الموظف"
-        ])
-        self.recent_transactions_table.horizontalHeader().setStretchLastSection(True)
-        self.recent_transactions_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.recent_transactions_table.setStyleSheet("""
-            QTableWidget {
-                border: none;
-                background-color: white;
-                gridline-color: #ddd;
-            }
-            QHeaderView::section {
-                background-color: #2c3e50;
-                color: white;
-                padding: 8px;
-                border: 1px solid #1a2530;
-                font-weight: bold;
-            }
-            QTableWidget::item {
-                padding: 5px;
-            }
-            QTableWidget::item:selected {
-                background-color: #3498db;
-                color: white;
-            }
-            QTableWidget::item[type="outgoing"] {
-                background-color: #e8f5e9;
-            }
-            QTableWidget::item[type="incoming"] {
-                background-color: #ffebee;
-            }
-        """)
-        recent_layout.addWidget(self.recent_transactions_table)
-        
-        # Pagination controls
-        pagination_layout = QHBoxLayout()
-        self.prev_button = ModernButton("السابق", color="#3498db")
-        self.prev_button.clicked.connect(self.prev_page)
-        pagination_layout.addWidget(self.prev_button)
-        
-        self.page_label = QLabel("الصفحة: 1")
-        pagination_layout.addWidget(self.page_label)
-        
-        self.next_button = ModernButton("التالي", color="#3498db")
-        self.next_button.clicked.connect(self.next_page)
-        pagination_layout.addWidget(self.next_button)
-        
-        recent_layout.addLayout(pagination_layout)
-        
-        # Single "Show All Transfers" button
-        view_all_button = ModernButton("عرض جميع التحويلات", color="#3498db")
-        view_all_button.clicked.connect(lambda: self.tab_widget.setCurrentIndex(2))
-        recent_layout.addWidget(view_all_button)
-        
-        recent_group.setLayout(recent_layout)
-        layout.addWidget(recent_group)
+        # Add the scroll area to the main layout
+        layout.addWidget(scroll_area)
         
         self.dashboard_tab.setLayout(layout)
-        
-        recent_layout.addWidget(self.recent_transactions_table)
-        
-        
-        recent_group.setLayout(recent_layout)
-        layout.addWidget(recent_group)
-        
-        self.dashboard_tab.setLayout(layout)
-
-        
-        # Load recent transactions
-        self.load_recent_transactions()
         
     def load_financial_status(self):
         """Load and display financial status for the branch"""
@@ -765,14 +799,6 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
                 self.load_employee_stats()
                 self._last_employee_stats = current_time
             
-            # Load transaction statistics (cache for 5 minutes)
-            if not self._transactions_cache or current_time - self._last_transactions > 300:
-                self.load_transaction_stats()
-                self._last_transactions = current_time
-            
-            # Load recent transactions with pagination (no caching as it's time-sensitive)
-            self.load_recent_transactions()
-            
             # Update status bar
             self.statusBar().showMessage("تم تحديث البيانات بنجاح", 3000)
             
@@ -782,7 +808,6 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
             # Attempt partial refresh
             try:
                 self.load_financial_status()
-                self.load_recent_transactions()
             except Exception as fallback_error:
                 print(f"Fallback refresh failed: {fallback_error}")
     
@@ -856,179 +881,7 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
             # For testing/demo, use placeholder data
             self.transactions_count.setText("عدد التحويلات: 0")
             self.transactions_amount.setText("إجمالي مبالغ التحويلات: 0 ليرة سورية")
-    
-    def load_recent_transactions(self):
-        """Load recent transactions with proper client-side pagination and performance optimizations"""
-        try:
-            # Disable table updates while loading
-            self.recent_transactions_table.setUpdatesEnabled(False)
-            
-            headers = {"Authorization": f"Bearer {self.token}"}
-            all_transactions = []
-
-            # Fetch outgoing transactions with pagination
-            outgoing_page = 1
-            while True:
-                try:
-                    outgoing_response = requests.get(
-                        f"{self.api_url}/transactions/",
-                        headers=headers,
-                        params={
-                            "branch_id": self.branch_id,
-                            "page": outgoing_page,
-                            "per_page": 100  # Fetch large pages to reduce requests
-                        },
-                        timeout=10  # Add timeout
-                    )
-                    
-                    if outgoing_response.status_code == 200:
-                        outgoing_data = outgoing_response.json()
-                        transactions = outgoing_data.get("transactions", [])
-                        if not transactions:  # No more data
-                            break
-                        all_transactions.extend(transactions)
-                        if outgoing_page >= outgoing_data.get("total_pages", 1):
-                            break
-                        outgoing_page += 1
-                    else:
-                        break
-                except requests.Timeout:
-                    print("Timeout while fetching outgoing transactions")
-                    break
-                except Exception as e:
-                    print(f"Error fetching outgoing transactions: {e}")
-                    break
-
-            # Fetch incoming transactions with pagination
-            incoming_page = 1
-            while True:
-                try:
-                    incoming_response = requests.get(
-                        f"{self.api_url}/transactions/",
-                        headers=headers,
-                        params={
-                            "destination_branch_id": self.branch_id,
-                            "page": incoming_page,
-                            "per_page": 100
-                        },
-                        timeout=10  # Add timeout
-                    )
-                    
-                    if incoming_response.status_code == 200:
-                        incoming_data = incoming_response.json()
-                        transactions = incoming_data.get("transactions", [])
-                        if not transactions:  # No more data
-                            break
-                        all_transactions.extend(transactions)
-                        if incoming_page >= incoming_data.get("total_pages", 1):
-                            break
-                        incoming_page += 1
-                    else:
-                        break
-                except requests.Timeout:
-                    print("Timeout while fetching incoming transactions")
-                    break
-                except Exception as e:
-                    print(f"Error fetching incoming transactions: {e}")
-                    break
-
-            # Sort all transactions by date descending
-            all_transactions.sort(key=lambda x: x.get('date', ''), reverse=True)
-
-            # Calculate pagination
-            total_items = len(all_transactions)
-            self.total_pages = max(1, (total_items + self.per_page - 1) // self.per_page)
-            
-            # Get current page slice
-            start_idx = (self.current_page - 1) * self.per_page
-            end_idx = start_idx + self.per_page
-            transactions = all_transactions[start_idx:end_idx]
-
-            # Clear and populate table
-            self.recent_transactions_table.setRowCount(len(transactions))
-
-            for row, transaction in enumerate(transactions):
-                # Type indicator
-                type_item = self.create_transaction_type_item(transaction)
-                self.recent_transactions_table.setItem(row, 0, type_item)
-
-                # Transaction ID
-                id_item = QTableWidgetItem(transaction.get("id", "")[:8] + "...")
-                self.recent_transactions_table.setItem(row, 1, id_item)
-
-                # Sender
-                sender_item = QTableWidgetItem(transaction.get("sender", ""))
-                self.recent_transactions_table.setItem(row, 2, sender_item)
-
-                # Receiver
-                receiver_item = QTableWidgetItem(transaction.get("receiver", ""))
-                self.recent_transactions_table.setItem(row, 3, receiver_item)
-
-                # Amount
-                amount = transaction.get("amount", 0)
-                currency = transaction.get("currency", "ليرة سورية")
-                amount_item = QTableWidgetItem(f"{amount:,.2f} {currency}")
-                self.recent_transactions_table.setItem(row, 4, amount_item)
-
-                # Date
-                date_item = QTableWidgetItem(transaction.get("date", ""))
-                self.recent_transactions_table.setItem(row, 5, date_item)
-
-                # Status
-                status = get_status_arabic(transaction.get("status", ""))
-                status_item = QTableWidgetItem(status)
-                status_item.setBackground(get_status_color(transaction.get("status", "")))
-                self.recent_transactions_table.setItem(row, 6, status_item)
-
-                # Sending Branch
-                sending_branch = self.branch_id_to_name.get(
-                    transaction.get("branch_id"), 
-                    "غير معروف"
-                )
-                self.recent_transactions_table.setItem(row, 7, QTableWidgetItem(sending_branch))
-
-                # Receiving Branch
-                receiving_branch = self.branch_id_to_name.get(
-                    transaction.get("destination_branch_id"),
-                    "غير معروف"
-                )
-                self.recent_transactions_table.setItem(row, 8, QTableWidgetItem(receiving_branch))
-
-                # Employee Name
-                employee_item = QTableWidgetItem(transaction.get("employee_name", ""))
-                self.recent_transactions_table.setItem(row, 9, employee_item)
-
-            # Update pagination controls
-            self.page_label.setText(f"الصفحة: {self.current_page}/{self.total_pages}")
-            self.prev_button.setEnabled(self.current_page > 1)
-            self.next_button.setEnabled(self.current_page < self.total_pages)
-
-        except Exception as e:
-            print(f"Error loading transactions: {e}")
-            self.load_placeholder_transactions()
-            self.page_label.setText("الصفحة: 1/1")
-            self.prev_button.setEnabled(False)
-            self.next_button.setEnabled(False)
-        finally:
-            # Re-enable table updates
-            self.recent_transactions_table.setUpdatesEnabled(True)
-            
-    def update_pagination_buttons(self):
-        """Enable/disable pagination buttons based on current page"""
-        self.prev_button.setEnabled(self.current_page > 1)
-        self.next_button.setEnabled(self.current_page < self.total_pages)
-
-    def prev_page(self):
-        """Navigate to previous page"""
-        if self.current_page > 1:
-            self.current_page -= 1
-            self.load_recent_transactions()
-
-    def next_page(self):
-        """Navigate to next page"""
-        if self.current_page < self.total_pages:
-            self.current_page += 1
-            self.load_recent_transactions()        
+      
             
     def load_branches(self):
         """Load all branches for ID-to-name mapping with caching and performance optimizations"""
@@ -1072,9 +925,6 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
                 self._branches_cache = self.branch_id_to_name
                 self._last_branches_update = current_time
                 
-                # Force refresh of transactions after loading branches
-                self.load_recent_transactions()
-                
             else:
                 print(f"Failed to load branches. Status: {response.status_code}")
                 self.branch_id_to_name = {}
@@ -1115,52 +965,7 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
     
     def load_placeholder_transactions(self):
         """Load placeholder transaction data for testing/demo."""
-        placeholder_transactions = []
-        
-        self.recent_transactions_table.setRowCount(len(placeholder_transactions))
-        
-        for row, transaction in enumerate(placeholder_transactions):
-            type_item = self.create_transaction_type_item(transaction)
-            self.recent_transactions_table.setItem(row, 0, type_item)
-            
-            # Transaction ID
-            id_item = QTableWidgetItem(transaction.get("id", "")[:8] + "...")
-            self.recent_transactions_table.setItem(row, 1, id_item)
-            
-            # Sender
-            sender_item = QTableWidgetItem(transaction.get("sender", ""))
-            self.recent_transactions_table.setItem(row, 2, sender_item)
-            
-            # Receiver
-            receiver_item = QTableWidgetItem(transaction.get("receiver", ""))
-            self.recent_transactions_table.setItem(row, 3, receiver_item)
-            
-            # Amount
-            amount = transaction.get("amount", 0)
-            currency = transaction.get("currency", "ليرة سورية")
-            amount_item = QTableWidgetItem(f"{amount:,.2f} {currency}")
-            self.recent_transactions_table.setItem(row, 4, amount_item)
-            
-            # Date
-            date_item = QTableWidgetItem(transaction.get("date", ""))
-            self.recent_transactions_table.setItem(row, 5, date_item)
-            
-            # Status
-            status_item = QTableWidgetItem(get_status_arabic(transaction.get("status", "")))
-            status_item.setBackground(get_status_color(transaction.get("status", "")))
-            self.recent_transactions_table.setItem(row, 6, status_item)
-            
-            # Employee Name (Column 7)
-            employee_item = QTableWidgetItem(transaction.get("employee_name", ""))
-            self.recent_transactions_table.setItem(row, 7, employee_item)
-            
-            # Receiving Branch (Column 8)
-            branch_item = QTableWidgetItem(transaction.get("destination_branch_name", "غير معروف"))
-            self.recent_transactions_table.setItem(row, 8, branch_item)
-            
-            # Receiving Governorate (Column 9)
-            gov_item = QTableWidgetItem(transaction.get("receiver_governorate", ""))
-            self.recent_transactions_table.setItem(row, 9, gov_item)
+        pass  # This function is no longer needed
     
     def add_employee(self):
         dialog = AddEmployeeDialog(
