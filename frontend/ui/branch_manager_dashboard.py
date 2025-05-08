@@ -55,9 +55,9 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
         self.report_per_page = 14
         self.report_current_page = 1
         self.report_total_pages = 1
-        self.current_zoom = 100  # Track current zoom level
+        self.current_zoom = 100
         
-        # Cache tracking variables
+        # Cache tracking variables with timestamps
         self._last_financial_update = 0
         self._last_employee_stats = 0
         self._last_branches_update = 0
@@ -65,7 +65,24 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
         self._financial_cache = None
         self._employee_stats_cache = None
         
+        # Cache duration in seconds
+        self.FINANCIAL_CACHE_DURATION = 30  # 30 seconds for financial data
+        self.EMPLOYEE_CACHE_DURATION = 300  # 5 minutes for employee stats
+        self.BRANCHES_CACHE_DURATION = 300  # 5 minutes for branches data
         
+        # Initialize UI first
+        self.setup_initial_ui()
+        
+        # Initialize update timers
+        self.financial_update_timer = QTimer()
+        self.financial_update_timer.timeout.connect(self.update_financial_status)
+        self.financial_update_timer.start(self.FINANCIAL_CACHE_DURATION * 1000)
+        
+        # Start progressive loading
+        QTimer.singleShot(0, self.initialize_data)
+    
+    def setup_initial_ui(self):
+        """Set up the initial UI without loading data"""
         self.setWindowTitle("لوحة تحكم مدير الفرع - نظام التحويلات المالية")
         self.setGeometry(100, 100, 1200, 800)
         self.setStyleSheet("""
@@ -142,14 +159,78 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
         main_layout.addWidget(self.tab_widget)
         
         # Status bar
-        self.statusBar().showMessage("جاهز")
-        
-        # Load branch info
-        self.load_branches()
-        self.load_branch_info()
+        self.statusBar().showMessage("جاري التحميل...")
+    
+    def initialize_data(self):
+        """Initialize data progressively with loading indicators"""
+        try:
+            # Step 1: Load essential data first (branch info and financial status)
+            self.statusBar().showMessage("جاري تحميل البيانات الأساسية...")
+            
+            # Load branch info first
+            self.load_branch_info()
+            
+            # Load financial status
+            self.update_financial_status()
+            
+            # Step 2: Load secondary data after a short delay
+            QTimer.singleShot(500, self.load_secondary_data)
+            
+        except Exception as e:
+            print(f"Error in initial data loading: {e}")
+            self.statusBar().showMessage("حدث خطأ أثناء تحميل البيانات", 5000)
 
-        
-        QTimer.singleShot(0, self.refresh_dashboard_data)
+    def load_secondary_data(self):
+        """Load secondary data after essential data is loaded"""
+        try:
+            self.statusBar().showMessage("جاري تحميل البيانات الإضافية...")
+            
+            # Load branches data
+            self.load_branches()
+            
+            # Load employee statistics
+            self.load_employee_stats()
+            
+            # Update status
+            self.statusBar().showMessage("تم تحميل البيانات بنجاح", 3000)
+            
+        except Exception as e:
+            print(f"Error loading secondary data: {e}")
+            self.statusBar().showMessage("حدث خطأ أثناء تحميل البيانات الإضافية", 5000)
+
+    def load_branch_info(self):
+        """Load branch information with loading indicator"""
+        try:
+            self.branch_name_label.setText("جاري التحميل...")
+            
+            headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
+            response = requests.get(
+                f"{self.api_url}/branches/{self.branch_id}", 
+                headers=headers,
+                timeout=5
+            )
+            
+            if response.status_code == 200:
+                branch = response.json()
+                self.branch_name_label.setText(f"الفرع: {branch.get('name', '')}")
+                self.branch_id_label.setText(branch.get('branch_id', ''))
+                self.branch_name_field.setText(branch.get('name', ''))
+                self.branch_location_label.setText(branch.get('location', ''))
+                self.branch_governorate_label.setText(branch.get('governorate', ''))
+                self.branch_governorate = branch.get('governorate', '')
+            else:
+                self.show_branch_info_error()
+        except Exception as e:
+            print(f"Error loading branch info: {e}")
+            self.show_branch_info_error()
+
+    def show_branch_info_error(self):
+        """Show error state for branch information"""
+        self.branch_name_label.setText("الفرع: ")
+        self.branch_id_label.setText("")
+        self.branch_name_field.setText("")
+        self.branch_location_label.setText("")
+        self.branch_governorate_label.setText("")
     
     def setup_dashboard_tab(self):
         """Set up the main dashboard tab with a modern and efficient design."""
@@ -775,27 +856,22 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
         self.settings_tab.setLayout(layout)
     
     def refresh_dashboard_data(self):
-        """Refresh all dashboard data with caching"""
+        """Refresh dashboard data with improved caching and on-demand updates"""
         try:
             current_time = time.time()
-            
-            # Load branches first for ID-to-name mapping (cache for 5 minutes)
-            if not self._branches_cache or current_time - self._last_branches_update > 300:
-                self.load_branches()
-                self._last_branches_update = current_time
-            
-            # Load financial status (cache for 5 minutes)
-            if not self._financial_cache or current_time - self._last_financial_update > 300:
-                self.load_financial_status()
-                self._last_financial_update = current_time
             
             # Update current date
             from datetime import datetime
             current_date = datetime.now().strftime("%Y-%m-%d")
             self.date_label.setText(f"تاريخ اليوم: {current_date}")
             
-            # Load employee statistics (cache for 10 minutes)
-            if not self._employee_stats_cache or current_time - self._last_employee_stats > 600:
+            # Load branches if cache is expired
+            if not self._branches_cache or current_time - self._last_branches_update > self.BRANCHES_CACHE_DURATION:
+                self.load_branches()
+                self._last_branches_update = current_time
+            
+            # Load employee statistics if cache is expired
+            if not self._employee_stats_cache or current_time - self._last_employee_stats > self.EMPLOYEE_CACHE_DURATION:
                 self.load_employee_stats()
                 self._last_employee_stats = current_time
             
@@ -805,60 +881,39 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
         except Exception as e:
             print(f"Error refreshing dashboard: {str(e)}")
             self.statusBar().showMessage("حدث خطأ أثناء تحديث البيانات", 5000)
-            # Attempt partial refresh
-            try:
-                self.load_financial_status()
-            except Exception as fallback_error:
-                print(f"Fallback refresh failed: {fallback_error}")
-    
-    def load_branch_info(self):
-        """Load branch information."""
-        try:
-            headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
-            
-            response = requests.get(f"{self.api_url}/branches/{self.branch_id}", headers=headers)
-            
-            if response.status_code == 200:
-                branch = response.json()
-                self.branch_name_label.setText(f"الفرع: {branch.get('name', '')}")
-                self.branch_id_label.setText(branch.get('branch_id', ''))
-                self.branch_name_field.setText(branch.get('name', ''))
-                self.branch_location_label.setText(branch.get('location', ''))
-                self.branch_governorate_label.setText(branch.get('governorate', ''))
-                self.branch_governorate = branch.get('governorate', '')
-            else:
-                # Use empty values instead of hardcoded examples
-                self.branch_name_label.setText("الفرع: ")
-                self.branch_id_label.setText("")
-                self.branch_name_field.setText("")
-                self.branch_location_label.setText("")
-                self.branch_governorate_label.setText("")
-        except Exception as e:
-            print(f"Error loading branch info: {e}")
-            # Use empty values instead of hardcoded examples
-            self.branch_name_label.setText("الفرع: ")
-            self.branch_id_label.setText("")
-            self.branch_name_field.setText("")
-            self.branch_location_label.setText("")
-            self.branch_governorate_label.setText("")
-    
+
     def load_employee_stats(self):
-        """Load employee statistics for this branch."""
+        """Load employee statistics with caching"""
         try:
+            current_time = time.time()
+            
+            # Check cache first
+            if self._employee_stats_cache and current_time - self._last_employee_stats < self.EMPLOYEE_CACHE_DURATION:
+                stats = self._employee_stats_cache
+                self.employees_count.setText(f"عدد الموظفين: {stats.get('total', 0)}")
+                self.active_employees.setText(f"الموظفين النشطين: {stats.get('active', 0)}")
+                return
+                
             headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
-            response = requests.get(f"{self.api_url}/branches/{self.branch_id}/employees/stats/", headers=headers)
+            response = requests.get(
+                f"{self.api_url}/branches/{self.branch_id}/employees/stats/", 
+                headers=headers,
+                timeout=5
+            )
             
             if response.status_code == 200:
                 stats = response.json()
                 self.employees_count.setText(f"عدد الموظفين: {stats.get('total', 0)}")
                 self.active_employees.setText(f"الموظفين النشطين: {stats.get('active', 0)}")
+                
+                # Update cache
+                self._employee_stats_cache = stats
+                self._last_employee_stats = current_time
             else:
-                # For testing/demo, use placeholder data
                 self.employees_count.setText("عدد الموظفين: 0")
                 self.active_employees.setText("الموظفين النشطين: 0")
         except Exception as e:
             print(f"Error loading employee stats: {e}")
-            # For testing/demo, use placeholder data
             self.employees_count.setText("عدد الموظفين: 0")
             self.active_employees.setText("الموظفين النشطين: 0")
     
@@ -884,18 +939,19 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
       
             
     def load_branches(self):
-        """Load all branches for ID-to-name mapping with caching and performance optimizations"""
+        """Load branches with improved caching"""
         try:
-            # Check cache first
             current_time = time.time()
-            if self._branches_cache and current_time - self._last_branches_update < 300:
+            
+            # Check cache first
+            if self._branches_cache and current_time - self._last_branches_update < self.BRANCHES_CACHE_DURATION:
                 return self._branches_cache
                 
             headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
             response = requests.get(
                 f"{self.api_url}/branches/", 
                 headers=headers,
-                timeout=10  # Add timeout
+                timeout=5
             )
             
             if response.status_code == 200:
@@ -914,7 +970,6 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
                         branch_name = branch.get('name', 'Unknown Branch')
                         
                         if branch_id is not None:
-                            # Store only the branch name as string
                             self.branch_id_to_name[branch_id] = branch_name
                             
                     except Exception as branch_error:
@@ -929,14 +984,8 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
                 print(f"Failed to load branches. Status: {response.status_code}")
                 self.branch_id_to_name = {}
                 
-        except requests.Timeout:
-            print("Timeout while loading branches")
-            self.branch_id_to_name = {}
-        except ValueError as e:
-            print(f"JSON decode error: {str(e)}")
-            self.branch_id_to_name = {}
         except Exception as e:
-            print(f"Unexpected error loading branches: {str(e)}")
+            print(f"Error loading branches: {str(e)}")
             self.branch_id_to_name = {}
             
     def create_transaction_type_item(self, transaction):
@@ -1499,6 +1548,58 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
         
         help_dialog.setLayout(layout)
         help_dialog.exec()
+
+    def update_financial_status(self):
+        """Update financial status with loading indicator"""
+        try:
+            # Show loading state
+            self.syp_balance_label.setText("جاري التحديث...")
+            self.usd_balance_label.setText("جاري التحديث...")
+            
+            headers = {"Authorization": f"Bearer {self.token}"}
+            response = requests.get(
+                f"{self.api_url}/branches/{self.branch_id}",
+                headers=headers,
+                timeout=5  # Add timeout
+            )
+            
+            if response.status_code == 200:
+                branch_data = response.json()
+                financial = branch_data.get("financial_stats", {})
+                
+                # Syrian Pounds Balance
+                syp_balance = financial.get("available_balance_syp", financial.get("available_balance", 0))
+                self.syp_balance_label.setText(f"{syp_balance:,.2f} ل.س")
+                
+                # Update color based on SYP balance
+                if syp_balance < 500000:
+                    self.syp_balance_label.setStyleSheet("color: #e74c3c; font-weight: bold;")
+                else:
+                    self.syp_balance_label.setStyleSheet("color: #2ecc71; font-weight: bold;")
+
+                # US Dollars Balance
+                usd_balance = financial.get("available_balance_usd", 0)
+                self.usd_balance_label.setText(f"{usd_balance:,.2f} $")
+                
+                # Update color based on USD balance
+                if usd_balance < 1000:
+                    self.usd_balance_label.setStyleSheet("color: #e74c3c; font-weight: bold;")
+                else:
+                    self.usd_balance_label.setStyleSheet("color: #3498db; font-weight: bold;")
+                
+                # Update cache
+                self._financial_cache = {
+                    'syp_balance': syp_balance,
+                    'usd_balance': usd_balance,
+                    'timestamp': time.time()
+                }
+                
+            else:
+                self.show_financial_error()
+
+        except Exception as e:
+            print(f"Error updating financial status: {e}")
+            self.show_financial_error()
 
 class QDateEditCalendarPopup(QDialog):
     def __init__(self, parent=None):
