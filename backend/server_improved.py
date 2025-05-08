@@ -2274,7 +2274,9 @@ def get_branch_tax_rate(
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user)
 ):
-    """Get tax rate for a specific branch"""
+    """Get tax rate for a specific branch. إذا كان الفرع هو المدير (0) تعاد الضريبة 0 ويعود الربح بالكامل للمدير."""
+    if branch_id == 0:
+        return {"branch_id": 0, "tax_rate": 0.0}
     # Find the branch
     branch = db.query(Branch).filter(Branch.id == branch_id).first()
     if not branch:
@@ -2323,6 +2325,7 @@ def tax_summary_endpoint(
         total_benefited_amount = sum(tx.benefited_amount or 0 for tx in transactions)
         total_tax_amount = sum(tx.tax_amount or 0 for tx in transactions)
         total_transactions = len(transactions)
+        total_profit = 0.0
 
         # Prepare branch summary
         branch_summary_dict = {}
@@ -2339,6 +2342,7 @@ def tax_summary_endpoint(
                     "total_amount": 0.0,
                     "benefited_amount": 0.0,
                     "tax_amount": 0.0,
+                    "profit": 0.0,
                     "currency": currency
                 }
             summary = branch_summary_dict[b_id]
@@ -2347,6 +2351,13 @@ def tax_summary_endpoint(
             summary["benefited_amount"] += tx.benefited_amount or 0
             summary["tax_amount"] += tx.tax_amount or 0
             summary["currency"] = currency
+            # حساب الربح: إذا كان الفرع هو المدير (id==0) الربح = benefited_amount، غير ذلك الربح = benefited_amount - tax_amount
+            if b_id == 0:
+                profit = tx.benefited_amount or 0
+            else:
+                profit = (tx.benefited_amount or 0) - (tx.tax_amount or 0)
+            summary["profit"] += profit
+            total_profit += profit
         branch_summary = list(branch_summary_dict.values())
 
         # Prepare transactions list for frontend
@@ -2354,6 +2365,11 @@ def tax_summary_endpoint(
         for tx in transactions:
             sending_branch = db.query(Branch).filter(Branch.id == tx.branch_id).first()
             destination_branch = db.query(Branch).filter(Branch.id == tx.destination_branch_id).first()
+            # حساب الربح لكل عملية
+            if tx.branch_id == 0:
+                profit = tx.benefited_amount or 0
+            else:
+                profit = (tx.benefited_amount or 0) - (tx.tax_amount or 0)
             tx_list.append({
                 "id": tx.id,
                 "date": tx.date.strftime("%Y-%m-%d"),
@@ -2364,7 +2380,8 @@ def tax_summary_endpoint(
                 "currency": tx.currency,
                 "source_branch": sending_branch.name if sending_branch else str(tx.branch_id),
                 "destination_branch": destination_branch.name if destination_branch else str(tx.destination_branch_id),
-                "status": tx.status
+                "status": tx.status,
+                "profit": profit
             })
 
         response_data = {
@@ -2374,6 +2391,7 @@ def tax_summary_endpoint(
             "total_benefited_amount": total_benefited_amount,
             "total_tax_amount": total_tax_amount,
             "total_transactions": total_transactions,
+            "total_profit": total_profit,
             "branch_summary": branch_summary,
             "transactions": tx_list
         }

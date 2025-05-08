@@ -397,14 +397,14 @@ class InventoryTab(QWidget):
             total_benefited = float(data.get('total_benefited_amount', 0))
             total_tax = float(data.get('total_tax_amount', 0))
             total_transactions = data.get('total_transactions', 0)
+            total_profit = float(data.get('total_profit', 0))
             
             # Calculate average tax rate
             avg_tax_rate = (total_tax / total_benefited * 100) if total_benefited > 0 else 0
             
-            
             self.tax_collected_label.setText(f"{total_tax:,.2f}")
             self.transactions_count_label.setText(f"{total_transactions:,}")
-            self.total_profit_label.setText(f"{total_tax:,.2f}")  # Profit equals tax amount
+            self.total_profit_label.setText(f"{total_profit:,.2f}")  # عرض الربح الحقيقي
             self.avg_tax_label.setText(f"{avg_tax_rate:.2f}%")
             
             # Update tax table
@@ -430,7 +430,7 @@ class InventoryTab(QWidget):
                     f"{branch.get('total_amount', 0):,.2f}",
                     f"{branch.get('benefited_amount', 0):,.2f}",
                     f"{branch.get('tax_amount', 0):,.2f}",
-                    f"{branch.get('tax_amount', 0):,.2f}",  # Profit equals tax amount
+                    f"{branch.get('profit', 0):,.2f}",  # عرض الربح الصحيح
                     branch.get('currency', '')
                 ]
                 if i < self.tax_table.rowCount():
@@ -454,7 +454,6 @@ class InventoryTab(QWidget):
                     status = tx.get('status', '')
                     status_color = self._get_status_color(status)
                     status_text = self._get_status_text(status)
-                    
                     items = [
                         tx.get('id', ''),
                         tx.get('date', ''),
@@ -465,19 +464,26 @@ class InventoryTab(QWidget):
                         tx.get('currency', ''),
                         tx.get('source_branch', ''),
                         tx.get('destination_branch', ''),
-                        status_text
+                        status_text,
+                        f"{tx.get('profit', 0):,.2f}"  # عرض الربح لكل عملية
                     ]
-                    
+                    # إذا كان الجدول لا يحتوي على عمود ربح أضفه (للتوافق)
+                    if self.transactions_table.columnCount() < 11:
+                        self.transactions_table.setColumnCount(11)
+                        self.transactions_table.setHorizontalHeaderLabels([
+                            "رقم التحويل", "التاريخ", "المبلغ", "المبلغ المستفاد",
+                            "نسبة الضريبة", "مبلغ الضريبة", "العملة",
+                            "الفرع المرسل", "الفرع المستلم", "الحالة", "الربح"
+                        ])
                     if i < self.transactions_table.rowCount():
                         for j, value in enumerate(items):
                             item = QTableWidgetItem(str(value))
                             item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                            if j in [2, 3, 5]:  # Money columns
+                            if j in [2, 3, 5, 10]:  # Money columns
                                 item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                             if j == 9:  # Status column
                                 item.setForeground(status_color)
                             self.transactions_table.setItem(i, j, item)
-            
         except Exception as e:
             logger.error(f"Error in _process_tax_data: {str(e)}")
             print(f"Error in _process_tax_data: {str(e)}")
