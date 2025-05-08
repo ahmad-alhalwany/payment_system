@@ -3,12 +3,40 @@ from PyQt6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView,
     QComboBox, QDateEdit, QGroupBox
 )
-from PyQt6.QtCore import Qt, QDate
+from PyQt6.QtCore import Qt, QDate, QThread, pyqtSignal
 from PyQt6.QtGui import QColor, QFont
 from ui.custom_widgets import ModernGroupBox, ModernButton
 from ui.theme import Theme
 import requests
 from datetime import datetime
+
+class ProfitsWorker(QThread):
+    finished = pyqtSignal(object, object, object, object)
+    def __init__(self, api_url, branch_id, token, params):
+        super().__init__()
+        self.api_url = api_url
+        self.branch_id = branch_id
+        self.token = token
+        self.params = params
+    def run(self):
+        try:
+            headers = {"Authorization": f"Bearer {self.token}"}
+            response = requests.get(
+                f"{self.api_url}/api/branches/{self.branch_id}/profits/",
+                params=self.params,
+                headers=headers
+            )
+            summary_response = requests.get(
+                f"{self.api_url}/api/branches/{self.branch_id}/profits/summary/",
+                headers=headers
+            )
+            stats_response = requests.get(
+                f"{self.api_url}/api/branches/{self.branch_id}/profits/statistics/",
+                headers=headers
+            )
+            self.finished.emit(response, summary_response, stats_response, None)
+        except Exception as e:
+            self.finished.emit(None, None, None, str(e))
 
 class ProfitsTabMixin:
     def setup_profits_tab(self):
@@ -153,57 +181,58 @@ class ProfitsTabMixin:
         
         # لا تحميل تلقائي للبيانات هنا
         # self.load_profits_data()  # تم التعليق أو الإزالة
+        self._is_loading_profits = False
     
     def load_profits_data(self):
-        """Load profits data from the server using the new endpoints."""
-        try:
-            # Get filter values
-            start_date = self.profits_date_from.date().toString("yyyy-MM-dd")
-            end_date = self.profits_date_to.date().toString("yyyy-MM-dd")
-            currency_filter = self.profits_currency_filter.currentText()
-            
-            # Prepare API parameters
-            params = {
-                "start_date": start_date,
-                "end_date": end_date
-            }
-            
-            if currency_filter != "الكل":
-                params["currency"] = "SYP" if currency_filter == "ليرة سورية" else "USD"
-            
-            # Make API requests in parallel
-            headers = {"Authorization": f"Bearer {self.token}"}
-            
-            # Get main profits data
-            response = requests.get(
-                f"{self.api_url}/api/branches/{self.branch_id}/profits/",
-                params=params,
-                headers=headers
-            )
-            
-            # Get summary data
-            summary_response = requests.get(
-                f"{self.api_url}/api/branches/{self.branch_id}/profits/summary/",
-                headers=headers
-            )
-            
-            # Get statistics
-            stats_response = requests.get(
-                f"{self.api_url}/api/branches/{self.branch_id}/profits/statistics/",
-                headers=headers
-            )
-            
-            if response.status_code == 200 and summary_response.status_code == 200 and stats_response.status_code == 200:
-                data = response.json()
-                summary_data = summary_response.json()
-                stats_data = stats_response.json()
-                
-                self.update_profits_display(data, summary_data, stats_data)
-            else:
-                print(f"Error loading profits data: {response.status_code}")
-                
-        except Exception as e:
-            print(f"Error in load_profits_data: {e}")
+        """Load profits data from the server using QThread."""
+        if getattr(self, '_is_loading_profits', False):
+            return
+        self._is_loading_profits = True
+        # مؤشر تحميل في الجدول
+        self.profits_table.setRowCount(1)
+        loading_item = QTableWidgetItem("جاري التحميل ...")
+        loading_item.setForeground(QColor("#2980b9"))
+        self.profits_table.setItem(0, 0, loading_item)
+        for col in range(1, self.profits_table.columnCount()):
+            self.profits_table.setItem(0, col, QTableWidgetItem(""))
+        # إعداد المعطيات
+        start_date = self.profits_date_from.date().toString("yyyy-MM-dd")
+        end_date = self.profits_date_to.date().toString("yyyy-MM-dd")
+        currency_filter = self.profits_currency_filter.currentText()
+        params = {
+            "start_date": start_date,
+            "end_date": end_date
+        }
+        if currency_filter != "الكل":
+            params["currency"] = "SYP" if currency_filter == "ليرة سورية" else "USD"
+        # تشغيل الخيط
+        self.profits_worker = ProfitsWorker(self.api_url, self.branch_id, self.token, params)
+        self.profits_worker.finished.connect(self.on_profits_loaded)
+        self.profits_worker.start()
+
+    def on_profits_loaded(self, response, summary_response, stats_response, error):
+        self._is_loading_profits = False
+        if error:
+            self.profits_table.setRowCount(1)
+            error_item = QTableWidgetItem(f"فشل التحميل: {error}")
+            error_item.setForeground(QColor("#e74c3c"))
+            self.profits_table.setItem(0, 0, error_item)
+            for col in range(1, self.profits_table.columnCount()):
+                self.profits_table.setItem(0, col, QTableWidgetItem(""))
+            return
+        if (response is None or summary_response is None or stats_response is None or
+            response.status_code != 200 or summary_response.status_code != 200 or stats_response.status_code != 200):
+            self.profits_table.setRowCount(1)
+            error_item = QTableWidgetItem("فشل تحميل البيانات من الخادم")
+            error_item.setForeground(QColor("#e74c3c"))
+            self.profits_table.setItem(0, 0, error_item)
+            for col in range(1, self.profits_table.columnCount()):
+                self.profits_table.setItem(0, col, QTableWidgetItem(""))
+            return
+        data = response.json()
+        summary_data = summary_response.json()
+        stats_data = stats_response.json()
+        self.update_profits_display(data, summary_data, stats_data)
     
     def update_profits_display(self, data, summary_data, stats_data):
         """Update the profits display with the received data."""

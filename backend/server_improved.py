@@ -1358,9 +1358,11 @@ def get_transactions_report(
 
         # Branch managers can only access their branch's data
         if current_user["role"] == "branch_manager":
-            if branch_id and branch_id != current_user["branch_id"]:
-                raise HTTPException(status_code=403, detail="Can only access your branch's data")
-            branch_id = current_user["branch_id"]
+            # إذا كان يبحث عن صادر (branch_id)، يجب أن يكون فرعه فقط
+            if branch_id is not None:
+                if branch_id != current_user["branch_id"]:
+                    raise HTTPException(status_code=403, detail="Can only access your branch's data")
+                branch_id = current_user["branch_id"]
 
         # Calculate offset for pagination
         offset = (page - 1) * per_page

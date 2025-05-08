@@ -37,6 +37,21 @@ class WorkerThread(QThread):
             self.result = e
         self.finished.emit(self.result)
 
+class InitialDataWorker(QThread):
+    finished = pyqtSignal(object)
+    def __init__(self, dashboard):
+        super().__init__()
+        self.dashboard = dashboard
+    def run(self):
+        result = {'success': True, 'error': None}
+        try:
+            self.dashboard.load_branch_info()
+            self.dashboard.update_financial_status()
+        except Exception as e:
+            result['success'] = False
+            result['error'] = str(e)
+        self.finished.emit(result)
+
 class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, ReportsTabMixin, ProfitsTabMixin):
     """Branch Manager Dashboard for the Internal Payment System."""
     
@@ -99,28 +114,28 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
         self.financial_update_timer.start(self.FINANCIAL_CACHE_DURATION * 1000)
         
         # Start progressive loading
-        QTimer.singleShot(0, self.initialize_data)
+        self.initialize_data()
     
     def initialize_data(self):
-        """Initialize data progressively with loading indicators"""
-        try:
-            # Step 1: Load essential data first
-            self.statusBar().showMessage("جاري تحميل البيانات الأساسية...")
-            self._loading_priority['essential'] = True
-            
-            # Load branch info first
-            self.load_branch_info()
-            
-            # Load financial status
-            self.update_financial_status()
-            
-            # Step 2: Load secondary data after a short delay
+        """Initialize data progressively with loading indicators in a separate thread"""
+        self.statusBar().showMessage("جاري تحميل البيانات الأساسية...")
+        self.loading_label = QLabel("جاري تحميل البيانات ... الرجاء الانتظار")
+        self.loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.centralWidget().layout().insertWidget(0, self.loading_label)
+        self.setEnabled(False)
+        self.initial_worker = InitialDataWorker(self)
+        self.initial_worker.finished.connect(self.on_initial_data_loaded)
+        self.initial_worker.start()
+
+    def on_initial_data_loaded(self, result):
+        self.setEnabled(True)
+        if hasattr(self, 'loading_label'):
+            self.loading_label.deleteLater()
+        if result['success']:
+            self.statusBar().showMessage("تم تحميل البيانات الأساسية بنجاح", 3000)
             QTimer.singleShot(500, self.load_secondary_data)
-            
-        except Exception as e:
-            print(f"Error in initial data loading: {e}")
-            self.statusBar().showMessage("حدث خطأ أثناء تحميل البيانات", 5000)
-            self._is_initializing = False
+        else:
+            self.statusBar().showMessage(f"فشل تحميل البيانات: {result['error']}", 5000)
 
     def load_secondary_data(self):
         """Load secondary data after essential data is loaded"""
