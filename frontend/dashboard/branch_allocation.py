@@ -1,15 +1,225 @@
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGroupBox, 
     QRadioButton, QButtonGroup, QDoubleSpinBox, QAbstractSpinBox,
-    QTextEdit, QMessageBox, QTabWidget, QTableWidgetItem, QWidget
+    QTextEdit, QMessageBox, QTabWidget, QTableWidgetItem, QWidget, QLabel,
+    QProgressBar, QFrame
 )
-from PyQt6.QtGui import QColor
-from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QColor, QMovie
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize
 import requests
 from ui.custom_widgets import ModernButton
+from decimal import Decimal, ROUND_HALF_UP
+import re
+
+class AmountValidator:
+    """Class to handle amount validation and formatting"""
+    def __init__(self):
+        self.max_amount = {
+            'SYP': Decimal('1000000000'),  # 1 billion SYP
+            'USD': Decimal('1000000')      # 1 million USD
+        }
+        self.min_amount = {
+            'SYP': Decimal('0.01'),
+            'USD': Decimal('0.01')
+        }
+        self.large_amount_threshold = {
+            'SYP': Decimal('10000000'),    # 10 million SYP
+            'USD': Decimal('10000')        # 10 thousand USD
+        }
+
+    def validate_amount(self, amount: float, currency: str, operation_type: str) -> tuple[bool, str]:
+        """Validate amount and return (is_valid, error_message)"""
+        try:
+            amount_dec = Decimal(str(amount)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+            
+            # Check minimum amount
+            if amount_dec < self.min_amount[currency]:
+                return False, f"المبلغ يجب أن يكون أكبر من {self.min_amount[currency]} {currency}"
+            
+            # Check maximum amount
+            if amount_dec > self.max_amount[currency]:
+                return False, f"المبلغ يتجاوز الحد الأقصى المسموح به ({self.max_amount[currency]:,.2f} {currency})"
+            
+            # Check for large amounts
+            if amount_dec > self.large_amount_threshold[currency]:
+                return True, f"تنبيه: المبلغ كبير ({amount_dec:,.2f} {currency})"
+            
+            return True, ""
+            
+        except Exception as e:
+            return False, f"خطأ في التحقق من المبلغ: {str(e)}"
+
+    def format_amount(self, amount: float, currency: str) -> str:
+        """Format amount with proper currency symbol and thousands separator"""
+        try:
+            amount_dec = Decimal(str(amount)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+            if currency == 'SYP':
+                return f"{amount_dec:,.2f} ل.س"
+            else:
+                return f"${amount_dec:,.2f}"
+        except:
+            return str(amount)
+
+class AllocationWorker(QThread):
+    finished = pyqtSignal(dict)
+    error = pyqtSignal(str)
+    progress = pyqtSignal(str)  # New signal for progress updates
+    
+    def __init__(self, api_url, token, branch_id, data=None, op_type="save"):
+        super().__init__()
+        self.api_url = api_url
+        self.token = token
+        self.branch_id = branch_id
+        self.data = data
+        self.op_type = op_type
+        self.validator = AmountValidator()
+    
+    def run(self):
+        try:
+            headers = {"Authorization": f"Bearer {self.token}"}
+            
+            if self.op_type == "save":
+                # Validate amount before sending
+                is_valid, error_msg = self.validator.validate_amount(
+                    self.data["amount"],
+                    self.data["currency"],
+                    self.data["type"]
+                )
+                
+                if not is_valid:
+                    self.error.emit(error_msg)
+                    return
+                
+                self.progress.emit("جاري إرسال الطلب...")
+                response = requests.post(
+                    f"{self.api_url}/branches/{self.branch_id}/allocate-funds/",
+                    headers=headers,
+                    json=self.data,
+                    timeout=10
+                )
+                
+                if response.status_code == 200:
+                    self.finished.emit(response.json())
+                else:
+                    try:
+                        error_data = response.json()
+                        error_msg = error_data.get("detail", error_data.get("message", str(error_data)))
+                    except:
+                        error_msg = response.text[:200]
+                    self.error.emit(f"رمز الخطأ: {response.status_code}\n{error_msg}")
+                    
+            elif self.op_type == "delete":
+                self.progress.emit("جاري حذف الرصيد...")
+                
+                # Delete SYP allocations
+                response_syp = requests.delete(
+                    f"{self.api_url}/branches/{self.branch_id}/allocations/?currency=SYP",
+                    headers=headers,
+                    timeout=10
+                )
+                
+                if response_syp.status_code != 200:
+                    error_syp = response_syp.json().get("detail", "") if response_syp.status_code != 200 else ""
+                    self.error.emit(f"فشل في حذف رصيد الليرة: {error_syp}")
+                    return
+                
+                self.progress.emit("تم حذف رصيد الليرة، جاري حذف رصيد الدولار...")
+                
+                # Delete USD allocations
+                response_usd = requests.delete(
+                    f"{self.api_url}/branches/{self.branch_id}/allocations/?currency=USD",
+                    headers=headers,
+                    timeout=10
+                )
+                
+                if response_usd.status_code != 200:
+                    error_usd = response_usd.json().get("detail", "") if response_usd.status_code != 200 else ""
+                    self.error.emit(f"فشل في حذف رصيد الدولار: {error_usd}")
+                    return
+                
+                self.finished.emit({"success": True})
+                
+        except requests.Timeout:
+            self.error.emit("انتهت مهلة الاتصال بالخادم. يرجى المحاولة مرة أخرى.")
+        except requests.ConnectionError:
+            self.error.emit("فشل الاتصال بالخادم. يرجى التحقق من اتصال الإنترنت.")
+        except Exception as e:
+            self.error.emit(f"حدث خطأ غير متوقع: {str(e)}")
+
+class LoadingOverlay(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        
+        # Create main layout
+        layout = QVBoxLayout(self)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        # Create spinner
+        self.spinner_label = QLabel()
+        self.movie = QMovie(":/icons/loading.gif")  # You'll need to add this resource
+        self.movie.setScaledSize(QSize(48, 48))
+        self.spinner_label.setMovie(self.movie)
+        self.movie.start()
+        
+        # Create progress bar
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 0)  # Indeterminate progress
+        self.progress_bar.setFixedWidth(200)
+        self.progress_bar.setStyleSheet("""
+            QProgressBar {
+                border: 2px solid #f0f0f0;
+                border-radius: 5px;
+                background-color: #ffffff;
+                height: 10px;
+            }
+            QProgressBar::chunk {
+                background-color: #2ecc71;
+                border-radius: 5px;
+            }
+        """)
+        
+        # Create status label
+        self.status_label = QLabel("جاري تنفيذ العملية...")
+        self.status_label.setStyleSheet("""
+            QLabel {
+                color: #2c3e50;
+                font-size: 14px;
+                font-weight: bold;
+                background: transparent;
+            }
+        """)
+        
+        # Add widgets to layout
+        layout.addWidget(self.spinner_label, alignment=Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.progress_bar, alignment=Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.status_label, alignment=Qt.AlignmentFlag.AlignCenter)
+        
+        # Set overlay style
+        self.setStyleSheet("""
+            QWidget {
+                background-color: rgba(255, 255, 255, 0.8);
+                border-radius: 10px;
+            }
+        """)
+    
+    def set_message(self, message):
+        self.status_label.setText(message)
+    
+    def showEvent(self, event):
+        self.movie.start()
+        super().showEvent(event)
+    
+    def hideEvent(self, event):
+        self.movie.stop()
+        super().hideEvent(event)
 
 class BranchAllocationMixin:
     """Mixin class containing allocation-related functionality"""
+    def __init__(self):
+        self.validator = AmountValidator()
+
     def allocate_funds(self):
         """Open dialog to allocate/deduct funds from branch with enhanced currency handling."""
         selected_rows = self.branches_table.selectionModel().selectedRows()
@@ -163,6 +373,14 @@ class BranchAllocationMixin:
         button_layout.addWidget(self.save_button)
         main_layout.addLayout(button_layout)
 
+        # Replace the old loading label with the new overlay
+        self.loading_overlay = LoadingOverlay(dialog)
+        self.loading_overlay.hide()
+        main_layout.addWidget(self.loading_overlay)
+        
+        # Make sure the overlay covers the entire dialog
+        self.loading_overlay.setGeometry(0, 0, dialog.width(), dialog.height())
+
         # Set tab order
         QWidget.setTabOrder(self.add_radio, self.deduct_radio)
         QWidget.setTabOrder(self.deduct_radio, self.syp_radio)
@@ -174,115 +392,97 @@ class BranchAllocationMixin:
 
     def validate_and_save(self, dialog, branch_id):
         """Validate inputs before saving"""
-        if self.amount_input.value() <= 0:
-            QMessageBox.warning(self, "خطأ", "المبلغ يجب أن يكون أكبر من الصفر")
-            return
+        try:
+            amount = self.amount_input.value()
+            currency = "USD" if self.usd_radio.isChecked() else "SYP"
+            operation_type = "allocation" if self.add_radio.isChecked() else "deduction"
             
-        if not self.syp_radio.isChecked() and not self.usd_radio.isChecked():
-            QMessageBox.warning(self, "خطأ", "الرجاء اختيار نوع العملة")
-            return
+            # Validate amount
+            is_valid, message = self.validator.validate_amount(amount, currency, operation_type)
             
-        self.save_allocation(branch_id, dialog)
-        
+            if not is_valid:
+                QMessageBox.warning(self, "خطأ في المبلغ", message)
+                return
+            
+            # If it's a large amount, ask for confirmation
+            if "تنبيه" in message:
+                confirm = QMessageBox.question(
+                    self,
+                    "تأكيد المبلغ الكبير",
+                    f"المبلغ {self.validator.format_amount(amount, currency)} كبير.\nهل أنت متأكد من المتابعة؟",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                )
+                if confirm == QMessageBox.StandardButton.No:
+                    return
+            
+            self.save_allocation(branch_id, dialog)
+            
+        except Exception as e:
+            QMessageBox.critical(self, "خطأ في التحقق", f"حدث خطأ أثناء التحقق من البيانات:\n{str(e)}")
+
     def save_allocation(self, branch_id, dialog):
         """Save allocation/deduction to the branch with enhanced validation"""
         try:
-            # Validate inputs
             amount = self.amount_input.value()
-            if amount <= 0:
-                QMessageBox.warning(self, "خطأ في الإدخال", "يرجى إدخال مبلغ أكبر من الصفر")
-                return
-
-            # Get operation details with explicit type conversion
             operation_type = "allocation" if self.add_radio.isChecked() else "deduction"
             currency = "USD" if self.usd_radio.isChecked() else "SYP"
             
-            # Validate currency selection
-            if not self.syp_radio.isChecked() and not self.usd_radio.isChecked():
-                QMessageBox.warning(self, "خطأ", "الرجاء اختيار نوع العملة (ل.س أو $)")
-                return
-
-            # Prepare request data
             data = {
                 "amount": round(amount, 2),
                 "type": operation_type,
                 "currency": currency,
-                "description": self.desc_input.toPlainText().strip() or 
+                "description": self.desc_input.toPlainText().strip() or \
                               f"{'إيداع' if operation_type == 'allocation' else 'خصم'} {currency} بواسطة المدير"
             }
-
-            # Make API request
-            response = requests.post(
-                f"{self.api_url}/branches/{branch_id}/allocate-funds/",
-                headers={"Authorization": f"Bearer {self.token}"},
-                json=data,
-                timeout=10  # Add timeout
-            )
-
-            # Handle response
-            if response.status_code == 200:
-                response_data = response.json()
-                
-                # Find the row index for the current branch
-                target_row = -1
-                for row in range(self.branches_table.rowCount()):
-                    if self.branches_table.item(row, 0).data(Qt.ItemDataRole.UserRole) == branch_id:
-                        target_row = row
-                        break
-                
-                if target_row != -1:
-                    # Update SYP balance (column 5)
-                    syp_item = QTableWidgetItem(f"{response_data['new_allocated_syp']:,.2f}")
-                    syp_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                    self.branches_table.setItem(target_row, 5, syp_item)
-                    
-                    # Update USD balance (column 6)
-                    usd_item = QTableWidgetItem(f"{response_data['new_allocated_usd']:,.2f}")
-                    usd_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                    self.branches_table.setItem(target_row, 6, usd_item)
-                    
-                    # Force the table to refresh the display
-                    self.branches_table.viewport().update()
-                
-                QMessageBox.information(
-                    self, 
-                    "نجاح", 
-                    f"تم تحديث الرصيد بنجاح\n"
-                    f"المبلغ: {amount:,.2f} {currency}\n"
-                    f"النوع: {'إضافة' if operation_type == 'allocation' else 'خصم'}"
-                )
-                
-                # Close dialog after successful update
-                dialog.accept()
-            else:
-                error_msg = "خطأ غير معروف"
-                try:
-                    error_data = response.json()
-                    error_msg = error_data.get("detail", error_data.get("message", str(error_data)))
-                except:
-                    error_msg = response.text[:200]  # Show first 200 chars of error
-                
-                QMessageBox.warning(
-                    self, 
-                    "فشل في العملية", 
-                    f"رمز الخطأ: {response.status_code}\n{error_msg}"
-                )
-
-        except requests.exceptions.RequestException as e:
-            QMessageBox.critical(
-                self, 
-                "خطأ في الاتصال", 
-                f"تعذر الاتصال بالخادم:\n{str(e)}"
-            )
-        except Exception as e:
-            QMessageBox.critical(
-                self, 
-                "خطأ غير متوقع", 
-                f"حدث خطأ فادح:\n{str(e)}"
-            )
             
+            self.loading_overlay.set_message("جاري تنفيذ العملية...")
+            self.loading_overlay.show()
+            self._set_buttons_enabled(False)
+            
+            self.allocation_worker = AllocationWorker(self.api_url, self.token, branch_id, data, op_type="save")
+            self.allocation_worker.finished.connect(lambda response_data: self._on_allocation_success(response_data, branch_id, amount, currency, operation_type, dialog))
+            self.allocation_worker.error.connect(lambda msg: self._on_allocation_error(msg))
+            self.allocation_worker.progress.connect(lambda msg: self.loading_overlay.set_message(msg))
+            self.allocation_worker.start()
+            
+        except Exception as e:
+            self.loading_overlay.hide()
+            self._set_buttons_enabled(True)
+            QMessageBox.critical(self, "خطأ غير متوقع", f"حدث خطأ فادح:\n{str(e)}")
+
+    def _on_allocation_success(self, response_data, branch_id, amount, currency, operation_type, dialog):
+        self.loading_overlay.hide()
+        self._set_buttons_enabled(True)
+        # Find the row index for the current branch
+        target_row = -1
+        for row in range(self.branches_table.rowCount()):
+            if self.branches_table.item(row, 0).data(Qt.ItemDataRole.UserRole) == branch_id:
+                target_row = row
+                break
+        if target_row != -1:
+            # Update SYP balance (column 5)
+            syp_item = QTableWidgetItem(f"{response_data['new_allocated_syp']:,.2f}")
+            syp_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.branches_table.setItem(target_row, 5, syp_item)
+            # Update USD balance (column 6)
+            usd_item = QTableWidgetItem(f"{response_data['new_allocated_usd']:,.2f}")
+            usd_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.branches_table.setItem(target_row, 6, usd_item)
+            self.branches_table.viewport().update()
+        QMessageBox.information(
+            self, 
+            "نجاح", 
+            f"تم تحديث الرصيد بنجاح\nالمبلغ: {amount:,.2f} {currency}\nالنوع: {'إضافة' if operation_type == 'allocation' else 'خصم'}"
+        )
+        dialog.accept()
+
+    def _on_allocation_error(self, msg):
+        self.loading_overlay.hide()
+        self._set_buttons_enabled(True)
+        QMessageBox.warning(self, "فشل في العملية", msg)
+
     def delete_allocation(self, branch_id, dialog):
-        """Delete all allocated funds for the branch"""
+        """Delete all allocated funds for the branch (now threaded)"""
         try:
             confirm = QMessageBox.question(
                 self,
@@ -290,31 +490,32 @@ class BranchAllocationMixin:
                 "هل أنت متأكد من حذف الرصيد بالكامل؟ سيتم ضبط الرصيد على الصفر لكلا العملتين.",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
             )
-            
             if confirm == QMessageBox.StandardButton.Yes:
-                headers = {"Authorization": f"Bearer {self.token}"}
-                
-                # Delete SYP allocations
-                response_syp = requests.delete(
-                    f"{self.api_url}/branches/{branch_id}/allocations/?currency=SYP",
-                    headers=headers
-                )
-                
-                # Delete USD allocations
-                response_usd = requests.delete(
-                    f"{self.api_url}/branches/{branch_id}/allocations/?currency=USD",
-                    headers=headers
-                )
-                
-                if response_syp.status_code == 200 and response_usd.status_code == 200:
-                    QMessageBox.information(self, "نجاح", "تم حذف الرصيد بالكامل لكلا العملتين")
-                    self.load_branches()
-                    dialog.accept()
-                else:
-                    error_syp = response_syp.json().get("detail", "") if response_syp.status_code != 200 else ""
-                    error_usd = response_usd.json().get("detail", "") if response_usd.status_code != 200 else ""
-                    error = error_syp + " " + error_usd
-                    QMessageBox.warning(self, "خطأ", f"فشل في الحذف: {error}")
-                    
+                self.loading_overlay.set_message("جاري حذف الرصيد...")
+                self.loading_overlay.show()
+                self._set_buttons_enabled(False)
+                self.delete_worker = AllocationWorker(self.api_url, self.token, branch_id, op_type="delete")
+                self.delete_worker.finished.connect(lambda _: self._on_delete_success(dialog))
+                self.delete_worker.error.connect(lambda msg: self._on_delete_error(msg))
+                self.delete_worker.start()
         except Exception as e:
-            QMessageBox.critical(self, "خطأ فادح", f"حدث خطأ في النظام: {str(e)}")            
+            self.loading_overlay.hide()
+            self._set_buttons_enabled(True)
+            QMessageBox.critical(self, "خطأ فادح", f"حدث خطأ في النظام: {str(e)}")
+
+    def _on_delete_success(self, dialog):
+        self.loading_overlay.hide()
+        self._set_buttons_enabled(True)
+        QMessageBox.information(self, "نجاح", "تم حذف الرصيد بالكامل لكلا العملتين")
+        self.load_branches()
+        dialog.accept()
+
+    def _on_delete_error(self, msg):
+        self.loading_overlay.hide()
+        self._set_buttons_enabled(True)
+        QMessageBox.warning(self, "خطأ", msg)
+
+    def _set_buttons_enabled(self, enabled: bool):
+        self.save_button.setEnabled(enabled)
+        self.cancel_button.setEnabled(enabled)
+        self.delete_button.setEnabled(enabled)            
