@@ -145,9 +145,26 @@ class EmployeeManagementMixin:
         """Get branch name from cached data with LRU caching"""
         return self.branch_id_to_name.get(branch_id, "غير محدد")
 
+    def _load_branches_for_employees(self):
+        """Load branches and store in branch_id_to_name mapping if not already loaded."""
+        if self.branch_id_to_name:
+            return  # Already loaded
+        try:
+            headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
+            response = requests.get(f"{self.api_url}/branches/", headers=headers)
+            if response.status_code == 200:
+                data = response.json()
+                branches = data.get("branches", [])
+                self.branch_id_to_name = {b["id"]: b["name"] for b in branches if "id" in b and "name" in b}
+        except Exception as e:
+            print(f"Error loading branches: {e}")
+            self.branch_id_to_name = {}
+
     def load_employees(self, branch_id: Optional[int] = None):
         """Load employees data with improved performance"""
         try:
+            # Ensure branches are loaded first
+            self._load_branches_for_employees()
             # Cancel any existing worker
             if self._current_worker and self._current_worker.isRunning():
                 self._current_worker.cancel()
@@ -227,6 +244,8 @@ class EmployeeManagementMixin:
     def filter_employees(self):
         """Filter employees with improved performance"""
         try:
+            # Ensure branches are loaded first
+            self._load_branches_for_employees()
             # Get filter criteria
             branch_id = self.branch_filter.currentData()
             search_text = self.employee_search.text().strip().lower()
