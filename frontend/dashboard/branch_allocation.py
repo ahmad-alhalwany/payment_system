@@ -506,7 +506,21 @@ class BranchAllocationMixin:
     def _on_delete_success(self, dialog):
         self.loading_overlay.hide()
         self._set_buttons_enabled(True)
+        # تحديث خلايا الجدول مباشرة بعد الحذف
+        selected_rows = self.branches_table.selectionModel().selectedRows()
+        if selected_rows:
+            row = selected_rows[0].row()
+            syp_item = QTableWidgetItem("0.00")
+            syp_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.branches_table.setItem(row, 5, syp_item)
+            usd_item = QTableWidgetItem("0.00")
+            usd_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.branches_table.setItem(row, 6, usd_item)
+            self.branches_table.viewport().update()
         QMessageBox.information(self, "نجاح", "تم حذف الرصيد بالكامل لكلا العملتين")
+        # إبطال الكاش قبل إعادة التحميل
+        if hasattr(self, 'branch_cache'):
+            self.branch_cache.invalidate('branches')
         self.load_branches()
         dialog.accept()
 
