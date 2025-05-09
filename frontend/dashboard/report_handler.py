@@ -1,44 +1,185 @@
 from PyQt6.QtWidgets import (
     QGridLayout, QDialog, QLabel, QComboBox, QDateEdit,
     QTableWidget, QTableWidgetItem, QFileDialog, QMessageBox, 
-    QVBoxLayout, QHBoxLayout, QHeaderView, QWidget
+    QVBoxLayout, QHBoxLayout, QHeaderView, QWidget, QProgressDialog
 )
-from PyQt6.QtGui import QFont, QColor
-from PyQt6.QtCore import Qt, QDate, QThread, pyqtSignal
+from PyQt6.QtGui import QFont, QColor, QPainter, QPageSize, QTextDocument
+from PyQt6.QtCore import Qt, QDate, QThread, pyqtSignal, QTimer
+from PyQt6.QtPrintSupport import QPrinter, QPrintDialog
 from ui.custom_widgets import ModernGroupBox, ModernButton
 from utils.helpers import get_status_arabic, get_status_color
+from dashboard.table_manager import OptimizedTableManager
 import requests
 from api.client import APIClient
+import pandas as pd
+import numpy as np
+from datetime import datetime, timedelta
+import json
+from typing import Dict, List, Any, Optional
+import weakref
+import time
+
+class ReportCache:
+    """Cache manager for report data"""
+    _instance = None
+    CACHE_DURATION = 300  # 5 minutes
+    
+    @classmethod
+    def getInstance(cls):
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+    
+    def __init__(self):
+        self.cache = {}
+        self.timestamps = {}
+        
+    def get(self, key: str) -> Optional[Dict]:
+        """Get cached report data if valid"""
+        if key in self.cache and time.time() - self.timestamps.get(key, 0) < self.CACHE_DURATION:
+            return self.cache[key]
+        return None
+        
+    def set(self, key: str, data: Dict):
+        """Cache report data"""
+        self.cache[key] = data
+        self.timestamps[key] = time.time()
+        
+    def clear(self):
+        """Clear all cached data"""
+        self.cache.clear()
+        self.timestamps.clear()
+
+class ReportAnalyzer:
+    """Analyze report data and generate insights"""
+    
+    @staticmethod
+    def analyze_transactions(data: List[Dict]) -> Dict:
+        """Analyze transaction patterns and generate insights"""
+        if not data:
+            return {}
+            
+        try:
+            df = pd.DataFrame(data)
+            
+            # Basic statistics
+            stats = {
+                'total_count': len(df),
+                'total_amount': df['amount'].sum(),
+                'avg_amount': df['amount'].mean(),
+                'max_amount': df['amount'].max(),
+                'min_amount': df['amount'].min()
+            }
+            
+            # Status distribution
+            status_dist = df['status'].value_counts().to_dict()
+            stats['status_distribution'] = status_dist
+            
+            # Time analysis
+            if 'date' in df.columns:
+                df['date'] = pd.to_datetime(df['date'])
+                df['hour'] = df['date'].dt.hour
+                df['day'] = df['date'].dt.day_name()
+                
+                stats['hourly_distribution'] = df['hour'].value_counts().to_dict()
+                stats['daily_distribution'] = df['day'].value_counts().to_dict()
+            
+            # Branch analysis
+            if 'branch_id' in df.columns:
+                stats['branch_distribution'] = df['branch_id'].value_counts().to_dict()
+            
+            return stats
+            
+        except Exception as e:
+            print(f"Error analyzing transactions: {e}")
+            return {}
 
 class ReportWorker(QThread):
+    """Worker thread for report generation with improved error handling"""
+    
     result_ready = pyqtSignal(dict, str)
     error_occurred = pyqtSignal(str)
     progress_updated = pyqtSignal(str)
-    def __init__(self, url, headers, params, report_type):
+    
+    def __init__(self, url: str, headers: Dict, params: Dict, report_type: str):
         super().__init__()
         self.url = url
         self.headers = headers
         self.params = params
         self.report_type = report_type
         self._is_cancelled = False
+        self._cache = ReportCache.getInstance()
+        
     def run(self):
         try:
-            self.progress_updated.emit("جاري تحميل التقرير...")
-            response = requests.get(self.url, headers=self.headers, params=self.params, timeout=30)
-            if self._is_cancelled:
-                self.progress_updated.emit("تم إلغاء التحميل.")
+            # Check cache first
+            cache_key = f"{self.report_type}_{json.dumps(self.params)}"
+            cached_data = self._cache.get(cache_key)
+            
+            if cached_data:
+                self.result_ready.emit(cached_data, self.report_type)
                 return
-            if response.status_code == 200:
-                self.result_ready.emit(response.json(), self.report_type)
-            else:
+                
+            self.progress_updated.emit("جاري تحميل التقرير...")
+            
+            # Make request with timeout and retries
+            max_retries = 3
+            retry_count = 0
+            
+            while retry_count < max_retries:
                 try:
-                    error_data = response.json()
-                    msg = error_data.get("detail", f"HTTP {response.status_code}")
-                except:
-                    msg = f"HTTP {response.status_code}"
-                self.error_occurred.emit(msg)
+                    response = requests.get(
+                        self.url, 
+                        headers=self.headers, 
+                        params=self.params,
+                        timeout=30
+                    )
+                    
+                    if self._is_cancelled:
+                        self.progress_updated.emit("تم إلغاء التحميل.")
+                        return
+                        
+                    if response.status_code == 200:
+                        data = response.json()
+                        
+                        # Cache successful response
+                        self._cache.set(cache_key, data)
+                        
+                        # Analyze data if it's a transaction report
+                        if self.report_type == "transactions":
+                            analysis = ReportAnalyzer.analyze_transactions(
+                                data.get("transactions", [])
+                            )
+                            data['analysis'] = analysis
+                        
+                        self.result_ready.emit(data, self.report_type)
+                        return
+                    else:
+                        retry_count += 1
+                        if retry_count == max_retries:
+                            try:
+                                error_data = response.json()
+                                msg = error_data.get("detail", f"HTTP {response.status_code}")
+                            except:
+                                msg = f"HTTP {response.status_code}"
+                            self.error_occurred.emit(msg)
+                        else:
+                            time.sleep(1)  # Wait before retry
+                            
+                except requests.exceptions.Timeout:
+                    retry_count += 1
+                    if retry_count == max_retries:
+                        self.error_occurred.emit("تجاوز وقت الاتصال")
+                    else:
+                        time.sleep(1)
+                        
+                except requests.exceptions.RequestException as e:
+                    self.error_occurred.emit(str(e))
+                    break
+                    
         except Exception as e:
             self.error_occurred.emit(str(e))
+            
     def cancel(self):
         self._is_cancelled = True
 
@@ -48,19 +189,23 @@ class ReportHandlerMixin:
     def __init__(self):
         """Initialize the mixin with required widgets"""
         self.reports_tab = QWidget()
-        self.report_table = QTableWidget()
+        self.report_table = None  # Will be initialized in setup_reports_tab
         self.report_type = QComboBox()
         self.from_date = QDateEdit()
         self.to_date = QDateEdit()
         self.report_branch_filter = QComboBox()
-        self.parent = None  # Will be set when the mixin is used
+        self.parent = None
         self.token = None
         self.api_url = None
         self.api_client = None
         self.branch_id_to_name = {}
         self._report_worker = None
         self._loading_label = None
-    
+        self._cache = ReportCache.getInstance()
+        
+        # Initialize table manager
+        self.table_manager = None  # Will be initialized in setup_reports_tab
+        
     def set_parent(self, parent):
         """Set the parent widget for showing messages"""
         self.parent = parent
@@ -96,7 +241,7 @@ class ReportHandlerMixin:
             self._loading_label = None
     
     def setup_reports_tab(self):
-        """Set up the reports tab."""
+        """Set up the reports tab with improved table management."""
         layout = QVBoxLayout()
         
         # Title
@@ -110,14 +255,20 @@ class ReportHandlerMixin:
         options_group = ModernGroupBox("خيارات التقرير", "#3498db")
         options_layout = QGridLayout()
         
-        # Report type
+        # Report type with improved options
         report_type_label = QLabel("نوع التقرير:")
         options_layout.addWidget(report_type_label, 0, 0)
         
-        self.report_type.addItems(["تقرير التحويلات", "تقرير الفروع", "تقرير الموظفين"])
+        self.report_type.addItems([
+            "تقرير التحويلات",
+            "تقرير الفروع",
+            "تقرير الموظفين",
+            "تقرير يومي",
+            "تقرير تحليلي"
+        ])
         options_layout.addWidget(self.report_type, 0, 1)
         
-        # Date range
+        # Date range with validation
         date_range_label = QLabel("نطاق التاريخ:")
         options_layout.addWidget(date_range_label, 1, 0)
         
@@ -127,7 +278,8 @@ class ReportHandlerMixin:
         date_range_layout.addWidget(from_date_label)
         
         self.from_date.setCalendarPopup(True)
-        self.from_date.setDate(QDate.currentDate().addDays(-30))  # Last 30 days
+        self.from_date.setDate(QDate.currentDate().addDays(-30))
+        self.from_date.dateChanged.connect(self._validate_dates)
         date_range_layout.addWidget(self.from_date)
         
         to_date_label = QLabel("إلى:")
@@ -135,15 +287,19 @@ class ReportHandlerMixin:
         
         self.to_date.setCalendarPopup(True)
         self.to_date.setDate(QDate.currentDate())
+        self.to_date.dateChanged.connect(self._validate_dates)
         date_range_layout.addWidget(self.to_date)
         
         options_layout.addLayout(date_range_layout, 1, 1)
         
-        # Branch filter
+        # Branch filter with search
         branch_filter_label = QLabel("الفرع:")
         options_layout.addWidget(branch_filter_label, 2, 0)
         
         self.report_branch_filter = QComboBox()
+        self.report_branch_filter.setEditable(True)
+        self.report_branch_filter.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.report_branch_filter.lineEdit().textChanged.connect(self._filter_branches)
         options_layout.addWidget(self.report_branch_filter, 2, 1)
         
         # Generate button
@@ -154,11 +310,13 @@ class ReportHandlerMixin:
         options_group.setLayout(options_layout)
         layout.addWidget(options_group)
         
-        # Report preview
+        # Initialize and setup table
+        self.report_table = QTableWidget()
+        self.table_manager = OptimizedTableManager.get_instance(self.report_table)
+        
+        # Report preview with improved table management
         preview_group = ModernGroupBox("معاينة التقرير", "#e74c3c")
         preview_layout = QVBoxLayout()
-        
-        self.report_table = QTableWidget()
         preview_layout.addWidget(self.report_table)
         
         # Export buttons
@@ -181,6 +339,28 @@ class ReportHandlerMixin:
         layout.addWidget(preview_group)
         
         self.reports_tab.setLayout(layout)
+        
+    def _validate_dates(self):
+        """Validate date range selection"""
+        from_date = self.from_date.date()
+        to_date = self.to_date.date()
+        
+        if from_date > to_date:
+            self.to_date.setDate(from_date)
+            
+    def _filter_branches(self, text):
+        """Filter branch list based on search text"""
+        if not text:
+            return
+            
+        for i in range(self.report_branch_filter.count()):
+            item_text = self.report_branch_filter.itemText(i)
+            self.report_branch_filter.setItemData(
+                i, 
+                Qt.ItemFlag.ItemIsEnabled if text.lower() in item_text.lower() 
+                else Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable,
+                Qt.ItemDataRole.UserRole -1
+            )
 
     def generate_report(self):
         if self._report_worker and self._report_worker.isRunning():
