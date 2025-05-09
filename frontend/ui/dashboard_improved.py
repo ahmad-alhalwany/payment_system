@@ -7,6 +7,17 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import QFont, QColor, QIcon
 from PyQt6.QtCore import Qt, QTimer, QDate, QSize
+import weakref
+import os
+import time
+from datetime import datetime
+
+from dashboard.manage import (
+    TableUpdateManager, 
+    DashboardCacheManager, 
+    DataLoadThread, 
+    TabDataManager
+)
 from ui.money_transfer_improved import MoneyTransferApp
 from dashboard.branch_management import BranchManagementMixin
 from ui.user_search import UserSearchDialog
@@ -23,36 +34,32 @@ from ui.user_management_improved import AddEmployeeDialog
 from dashboard.inventory import InventoryTab
 from ui.user_search import UserSearchDialog
 from ui.password_reset import PasswordResetDialog
-from dashboard.manage import TableUpdateManager, DashboardCacheManager, DataLoadThread, ChartManager, BranchStatsLoader, TabDataManager
 from dashboard.dashboard_utils import DashboardUtilsMixin
-
-import os
-import time
-from datetime import datetime
+from dashboard.table_manager import OptimizedTableManager
 
 class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, ReceiptPrinterMixin, ReportHandlerMixin, SettingsHandlerMixin, EmployeeManagementMixin, BranchManagementMixin, DashboardUtilsMixin):
     """Dashboard for the director role."""
     
     def __init__(self, token=None, full_name="مدير النظام"):
+        """Initialize the dashboard with proper order"""
         super().__init__()
         BranchManagementMixin.__init__(self)
         EmployeeManagementMixin.__init__(self)
         DashboardUtilsMixin.__init__(self)
+        ReportHandlerMixin.__init__(self)
+        
+        # Basic attributes
         self.token = token
         self.api_url = os.environ["API_URL"]
-        self.current_page = 1
-        self.total_pages = 1
-        self.per_page = 7
-        self.current_page_transactions = 1
-        self.transactions_per_page = 15
-        self.total_pages_transactions = 1
-        self.api_client = APIClient(token)
-        self.current_zoom = 100
         self.full_name = full_name
         
-        # Add smart loading variables
-        self._is_initial_load = True
-        self._current_tab = 0
+        # Set up ReportHandlerMixin
+        self.set_api_client(token, self.api_url)
+        self.set_parent(self)
+        
+        # Initialize managers and collections
+        self.table_managers = {}
+        self._active_threads = weakref.WeakSet()
         self._data_cache = {
             'basic_stats': {'data': None, 'timestamp': 0},
             'branches': {'data': None, 'timestamp': 0},
@@ -62,23 +69,31 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
             'users': {'data': None, 'timestamp': 0},
             'activity': {'data': None, 'timestamp': 0}
         }
-        self.cache_duration = 600  # 10 minutes cache duration
         
-        # --- Add missing QLabel attributes for stats ---
-        self.employees_count = QLabel("0")
-        self.transactions_count = QLabel("0")
-        self.amount_total = QLabel("0")
-        self.branches_count = QLabel("0")
+        # Initialize state variables
+        self.current_page = 1
+        self.total_pages = 1
+        self.per_page = 7
+        self.current_page_transactions = 1
+        self.transactions_per_page = 15
+        self.total_pages_transactions = 1
+        self.current_zoom = 100
+        self._is_initial_load = True
+        self._current_tab = 0
+        self.cache_duration = 600  # 10 minutes
+        self.loading_states = {}
+        self.preload_queue = []
         
-        # Modify timer intervals and combine updates
-        self.update_timer = QTimer(self)
-        self.update_timer.timeout.connect(self.smart_update)
-        self.update_timer.start(600000)  # 10 minutes
+        # Initialize API client
+        self.api_client = APIClient(token)
         
-        self.time_timer = QTimer(self)
-        self.time_timer.timeout.connect(self.update_time)
-        self.time_timer.start(60000)  # 1 minute
+        # Initialize cache manager
+        self.cache_manager = DashboardCacheManager.getInstance()
         
+        # Initialize tab manager
+        self.tab_manager = TabDataManager(self)
+        
+        # Setup window properties
         self.setWindowTitle("لوحة تحكم المدير")
         self.setGeometry(100, 100, 1200, 800)
         
@@ -88,38 +103,29 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
         # Setup UI components
         self.setup_ui_components()
         
-        # Load basic data
-        self.load_basic_dashboard_data()
-        
-        # Connect tab change signal
-        self.tabs.currentChanged.connect(self.on_tab_changed)
-        
-        # Initialize cache manager
-        self.cache_manager = DashboardCacheManager.getInstance()
-        
-        # Modify timer intervals
-        self.update_timer = QTimer()
-        self.update_timer.timeout.connect(self.smart_update)
-        self.update_timer.start(300000)  # 5 minutes instead of 30 seconds
-        
-        self.time_timer = QTimer()
-        self.time_timer.timeout.connect(self.update_time)
-        self.time_timer.start(60000)  # Keep 1 minute for time updates
+        # Setup timers
+        self.setup_timers()
         
         # Load initial data
         self.load_initial_data()
         
-        # Initialize tab data manager
-        self.tab_manager = TabDataManager(self)
+    def setup_timers(self):
+        """Setup all timers with proper intervals"""
+        # Update timer for periodic data refresh
+        self.update_timer = QTimer(self)
+        self.update_timer.timeout.connect(self.smart_update)
+        self.update_timer.start(300000)  # 5 minutes
         
-        # Modify timer intervals
-        self.update_timer = QTimer()
-        self.update_timer.timeout.connect(self.process_background_tasks)
-        self.update_timer.start(5000)  # Check every 5 seconds
+        # Time display update timer
+        self.time_timer = QTimer(self)
+        self.time_timer.timeout.connect(self.update_time)
+        self.time_timer.start(60000)  # 1 minute
         
-        # Setup UI with loading indicators
-        self.setup_ui_with_loading()
-
+        # Background tasks timer
+        self.background_timer = QTimer(self)
+        self.background_timer.timeout.connect(self.process_background_tasks)
+        self.background_timer.start(5000)  # 5 seconds
+    
     def setup_ui_with_loading(self):
         """Setup UI with loading indicators for each tab"""
         for i in range(self.tabs.count()):
@@ -182,9 +188,9 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
             if "basic_stats" in data:
                 self.update_basic_stats(data["basic_stats"])
             if "transactions" in data:
-                self.update_transactions_table(data["transactions"])
-            if "activity" in data and hasattr(self, 'activity_list'):
-                self.update_recent_activity_list(data["activity"])
+                self.update_transactions_data(data)
+            if "activity" in data:
+                self.update_activity_data(data)
                 
             # Hide loading indicator for current tab
             if current_tab:
@@ -814,6 +820,7 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
         
         # Employees table
         self.employees_table = QTableWidget()
+        manager = self._get_table_manager(self.employees_table)
         self.employees_table.setColumnCount(5)
         self.employees_table.setHorizontalHeaderLabels([
             "اسم المستخدم", "الدور", "الفرع", "تاريخ الإنشاء", "الحالة"
@@ -922,11 +929,11 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
         
         # Transactions table
         self.transactions_table = QTableWidget()
-        self.transactions_table.setColumnCount(11)
+        manager = self._get_table_manager(self.transactions_table)
+        self.transactions_table.setColumnCount(8)
         self.transactions_table.setHorizontalHeaderLabels([
-            "النوع", "رقم التحويل", "المرسل", "المستلم", "المبلغ", "التاريخ", "الحالة", 
-            "الفرع المرسل", "اتجاه الصادر",
-            "الفرع المستلم", "اتجاه الوارد", "اسم الموظف"
+            "رقم التحويل", "المرسل", "المستلم", "المبلغ", 
+            "التاريخ", "الحالة", "الفرع المرسل", "الفرع المستلم", "اسم الموظف"
         ])
         self.transactions_table.horizontalHeader().setStretchLastSection(True)
         self.transactions_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
@@ -1017,7 +1024,7 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
             # Check cache first
             cached_transactions = self._get_cached_data('transactions')
             if cached_transactions:
-                self.update_transactions_table({'transactions': cached_transactions})
+                self.update_transactions_data({'transactions': cached_transactions})
                 return
             
             # Initialize table update manager if not exists
@@ -1041,47 +1048,52 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
             # Update cache
             self._update_cache('transactions', transactions)
             # Update table
-            self.update_transactions_table(data)
+            self.update_transactions_data(data)
         except Exception as e:
             self.statusBar().showMessage(f"خطأ في معالجة البيانات: {str(e)}", 5000)
 
-    def update_transactions_table(self, data):
-        """Update transactions table with the loaded data"""
-        try:
-            transactions = data.get("transactions", [])
+    def update_transactions_data(self, data):
+        """Update transactions table with optimized manager"""
+        manager = self._get_table_manager(self.transactions_table)
+        
+        def format_type(row_data):
+            """Format transaction type"""
+            if isinstance(row_data, dict):
+                dest_branch = row_data.get("destination_branch_id")
+                if dest_branch == self.branch_id:
+                    return "وارد"
+                return "صادر"
+            return str(row_data)
             
-            # Client-side pagination
-            start_index = (self.current_page - 1) * self.per_page
-            end_index = start_index + self.per_page
-            page_transactions = transactions[start_index:end_index]
+        def format_amount(row_data):
+            """Format amount with currency"""
+            if isinstance(row_data, dict):
+                amount = row_data.get("amount", 0)
+                currency = row_data.get("currency", "")
+                return format_currency(amount, currency)
+            return str(row_data)
             
-            # Define column mapping
-            column_mapping = {
-                0: ("type", lambda x: self.create_transaction_type_item(x).text()),
-                1: "id",
-                2: "sender",
-                3: "receiver",
-                4: ("amount", lambda x: f"{float(x):,.2f}" if x else "0.00"),
-                5: "date",
-                6: ("status", lambda x: self._get_status_arabic(x)),
-                7: "sending_branch_name",
-                8: ("outgoing_direction", lambda x: "↑" if x.get("branch_id") else ""),
-                9: "destination_branch_name",
-                10: ("incoming_direction", lambda x: "↓" if x.get("destination_branch_id") else ""),
-                11: "employee_name"
-            }
-            
-            # Update table using the manager
-            self.table_manager.update_table_data(page_transactions, column_mapping)
-            
-            # Update pagination info
-            self.total_pages = (len(transactions) + self.per_page - 1) // self.per_page
-            self.update_pagination_controls()
-            
-            self.statusBar().showMessage("تم تحميل التحويلات بنجاح", 3000)
-            
-        except Exception as e:
-            self.statusBar().showMessage(f"خطأ في تحديث الجدول: {str(e)}", 5000)
+        def format_direction(row_data, direction_type):
+            """Format direction arrows"""
+            if isinstance(row_data, dict):
+                if direction_type == "outgoing":
+                    return "↑" if row_data.get("branch_id") else ""
+                else:  # incoming
+                    return "↓" if row_data.get("destination_branch_id") else ""
+            return ""
+
+        column_mapping = {
+            0: "id",
+            1: "sender",
+            2: "receiver",
+            3: ("amount", format_amount),
+            4: "date",
+            5: ("status", lambda x: get_status_arabic(x) if isinstance(x, str) else str(x)),
+            6: "sending_branch_name",
+            7: "destination_branch_name",
+            8: "employee_name"
+        }
+        manager.set_data(data.get("transactions", []), column_mapping)
 
     def update_pagination_controls(self):
         """Update pagination controls."""
@@ -1141,11 +1153,10 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
                 transactions = all_transactions[start_index:end_index]
                 
                 # Initialize table structure
-                self.transactions_table.setColumnCount(12)
+                self.transactions_table.setColumnCount(8)
                 self.transactions_table.setHorizontalHeaderLabels([
-                    "النوع", "رقم التحويل", "المرسل", "المستلم", "المبلغ", 
-                    "التاريخ", "الحالة", "الفرع المرسل", "اتجاه الصادر",
-                    "الفرع المستلم", "اتجاه الوارد", "اسم الموظف"
+                    "رقم التحويل", "المرسل", "المستلم", "المبلغ", 
+                    "التاريخ", "الحالة", "الفرع المرسل", "الفرع المستلم", "اسم الموظف"
                 ])
                 self.transactions_table.setRowCount(len(transactions))
                 
@@ -1512,14 +1523,21 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
         dialog = UserSearchDialog(token=self.token, parent=self, received=True)
         dialog.exec()
     def setup_inventory_tab(self):
-        """Set up the inventory tab for tracking tax receivables and profits."""
-        
+        """Set up the inventory tab."""
         layout = QVBoxLayout()
         
+        # إنشاء مثيل من InventoryTab
         self.inventory_widget = InventoryTab(token=self.token, parent=self)
         layout.addWidget(self.inventory_widget)
         
-        self.inventory_tab.setLayout(layout)
+        # إضافة مؤشر التحميل
+        self.inventory_loading = QLabel("جاري تحميل بيانات المخزون...")
+        self.inventory_loading.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.inventory_loading.setVisible(False)
+        layout.addWidget(self.inventory_loading)
+        
+        if self.inventory_tab.layout() is None:
+            self.inventory_tab.setLayout(layout)
 
     def refresh_branches(self):
         """Refresh branch data and update relevant UI elements."""
@@ -1536,14 +1554,19 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
             print(f"Error refreshing branches: {str(e)}")
 
     def load_branch_stats(self):
-        """Load branch statistics with optimized chart updates"""
+        """Load branch statistics with optimized loading"""
         try:
-            # Create and start stats loader thread
-            self.stats_loader = BranchStatsLoader(self.api_url, self.token)
-            self.stats_loader.stats_loaded.connect(self.update_branch_stats)
-            self.stats_loader.error_occurred.connect(lambda msg: self.statusBar().showMessage(msg, 5000))
-            self.stats_loader.progress_updated.connect(lambda msg: self.statusBar().showMessage(msg))
-            self.stats_loader.start()
+            self.statusBar().showMessage("جاري تحميل إحصائيات الفروع...")
+            
+            # Create and start data loading thread
+            load_thread = DataLoadThread(self.api_url, self.token, 'branches')
+            load_thread.data_loaded.connect(self.update_branch_stats)
+            load_thread.error_occurred.connect(lambda msg: self.statusBar().showMessage(msg, 5000))
+            load_thread.progress_updated.connect(lambda msg: self.statusBar().showMessage(msg))
+            
+            # Store thread reference to prevent garbage collection
+            self._active_threads.add(load_thread)
+            load_thread.start()
             
         except Exception as e:
             self.statusBar().showMessage(f"خطأ في تحميل إحصائيات الفروع: {str(e)}", 5000)
@@ -1556,13 +1579,6 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
             self.employees_count.setText(str(stats.get("total_employees", 0)))
             self.transactions_count.setText(str(stats.get("total_transactions", 0)))
             self.amount_total.setText(f"{stats.get('total_amount', 0):,.2f}")
-            
-            # Queue chart updates
-            branch_transfers = stats.get("transfers_by_branch", [])
-            self.chart_manager.queue_update("transfers", branch_transfers)
-            
-            branch_amounts = stats.get("amounts_by_branch", [])
-            self.chart_manager.queue_update("amounts", branch_amounts)
             
             self.statusBar().showMessage("تم تحديث إحصائيات الفروع بنجاح", 3000)
             
@@ -1766,8 +1782,8 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
         if not hasattr(self, 'branch_id_to_name'):
             self.branch_id_to_name = {}
         
-        # Initialize chart manager
-        self.chart_manager = ChartManager(self)
+        # Remove chart manager initialization
+        # self.chart_manager = ChartManager(self)
 
     def initialize_tabs(self):
         """Initialize all tabs without loading their data"""
@@ -1803,7 +1819,7 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
         
         # Inventory tab - Initialize UI only
         self.inventory_tab = QWidget()
-        self.setup_inventory_tab_ui()
+        self.setup_inventory_tab()
         self.tabs.addTab(self.inventory_tab, "المخزون")
         
         # Settings tab
@@ -1849,6 +1865,7 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
         
         # Employees table
         self.employees_table = QTableWidget()
+        manager = self._get_table_manager(self.employees_table)
         self.employees_table.setColumnCount(5)
         self.employees_table.setHorizontalHeaderLabels([
             "اسم المستخدم", "الدور", "الفرع", "تاريخ الإنشاء", "الحالة"
@@ -1898,40 +1915,22 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
         title.setStyleSheet("color: #2c3e50; margin-bottom: 20px;")
         layout.addWidget(title)
         
-        # Add loading indicator
+        # استخدام ReportHandlerMixin لإعداد تبويب التقارير
+        self.setup_reports_tab()  # من ReportHandlerMixin
+        
+        # إضافة مؤشر التحميل
         self.reports_loading = QLabel("جاري تحميل التقارير...")
         self.reports_loading.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.reports_loading.setVisible(False)
         layout.addWidget(self.reports_loading)
         
-        # Add placeholder for reports content
+        # إضافة محتوى التقارير
         self.reports_content = QWidget()
         layout.addWidget(self.reports_content)
         
-        self.reports_tab.setLayout(layout)
+        if self.reports_tab.layout() is None:
+            self.reports_tab.setLayout(layout)
 
-    def setup_inventory_tab_ui(self):
-        """Set up the inventory tab UI without loading data"""
-        layout = QVBoxLayout()
-        
-        # Title
-        title = QLabel("المخزون")
-        title.setFont(QFont("Arial", 18, QFont.Weight.Bold))
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title.setStyleSheet("color: #2c3e50; margin-bottom: 20px;")
-        layout.addWidget(title)
-        
-        # Add loading indicator
-        self.inventory_loading = QLabel("جاري تحميل بيانات المخزون...")
-        self.inventory_loading.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.inventory_loading.setVisible(False)
-        layout.addWidget(self.inventory_loading)
-        
-        # Add placeholder for inventory content
-        self.inventory_content = QWidget()
-        layout.addWidget(self.inventory_content)
-        
-        self.inventory_tab.setLayout(layout)
 
     def on_tab_changed(self, index):
         """Handle tab change and load necessary data"""
@@ -2271,3 +2270,105 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
     def refresh_employees(self):
         self._employees_cache = None
         self.load_employees()
+
+    def update_employees_data(self, data):
+        """Update employees table with optimized manager"""
+        manager = self._get_table_manager(self.employees_table)
+        column_mapping = {
+            0: "username",
+            1: ("role", lambda x: "مدير فرع" if x == "branch_manager" else "موظف"),
+            2: "branch_name",
+            3: "created_at",
+            4: ("is_active", lambda x: "نشط" if x else "غير نشط")
+        }
+        manager.set_data(data.get("employees", []), column_mapping)
+
+    def _get_table_manager(self, table_widget):
+        """Get or create OptimizedTableManager for a table"""
+        if table_widget not in self.table_managers:
+            self.table_managers[table_widget] = OptimizedTableManager.get_instance(table_widget)
+        return self.table_managers[table_widget]
+
+    def update_activity_data(self, data):
+        """Update activity table with optimized manager"""
+        manager = self._get_table_manager(self.activity_list)
+        column_mapping = {
+            0: "time",
+            1: "type",
+            2: "details",
+            3: ("status", lambda x: get_status_arabic(x) if isinstance(x, str) else str(x))
+        }
+        manager.set_data(data.get("activities", []), column_mapping)
+
+    def cleanup(self):
+        """Clean up resources when closing"""
+        try:
+            # Stop all timers
+            if hasattr(self, 'refresh_timer'):
+                self.refresh_timer.stop()
+            if hasattr(self, 'update_timer'):
+                self.update_timer.stop()
+            if hasattr(self, 'time_timer'):
+                self.time_timer.stop()
+            
+            # Clean up table managers
+            for manager in self.table_managers.values():
+                manager.cleanup()
+            self.table_managers.clear()
+            
+            # Clean up cache manager
+            if hasattr(self, 'cache_manager'):
+                self.cache_manager.clear()
+            
+            # Clean up active threads
+            if hasattr(self, '_active_threads'):
+                for thread in self._active_threads:
+                    if thread.isRunning():
+                        thread.stop()
+                        thread.wait()
+                self._active_threads.clear()
+            
+            # Clean up tab manager
+            if hasattr(self, 'tab_manager'):
+                self.tab_manager.cleanup()
+            
+            # Clean up data loaders
+            if hasattr(self, 'load_thread'):
+                if self.load_thread.isRunning():
+                    self.load_thread.stop()
+                    self.load_thread.wait()
+            
+            # Clean up money transfer widget
+            if hasattr(self, 'admin_transfer_widget'):
+                self.admin_transfer_widget.cleanup()
+            
+            # Clean up inventory widget
+            if hasattr(self, 'inventory_widget'):
+                self.inventory_widget.cleanup()
+            
+            # Clear all queues and caches
+            self._data_cache = {}
+            self.preload_queue = []
+            
+            # Reset loading states
+            self.loading_states = {}
+            
+            # Clean up UI elements
+            for tab in range(self.tabs.count()):
+                widget = self.tabs.widget(tab)
+                if hasattr(widget, 'loading_overlay'):
+                    widget.loading_overlay.deleteLater()
+            
+            # Clean up any open dialogs
+            for child in self.findChildren(QDialog):
+                child.close()
+                child.deleteLater()
+            
+            # Clear status bar
+            self.statusBar().clearMessage()
+            
+        except Exception as e:
+            print(f"Error during cleanup: {e}")
+            # Even if cleanup fails, ensure critical resources are released
+            self._data_cache = {}
+            self.table_managers.clear()
