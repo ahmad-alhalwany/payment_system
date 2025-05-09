@@ -1,6 +1,6 @@
 import logging
 logger = logging.getLogger(__name__)
-from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi import FastAPI, HTTPException, Depends, status, Request
 from sqlalchemy import create_engine, func, and_, or_, desc
 from sqlalchemy.orm import sessionmaker, Session, joinedload, aliased
 from models import User, Branch, Base, BranchFund, Notification, Transaction, BranchProfits
@@ -986,26 +986,30 @@ def create_branch(branch: BranchCreate, db: Session = Depends(get_db), current_u
             raise HTTPException(status_code=400, detail=f"Database integrity error: {str(e)}")
 
 @app.get("/branches/")
-def get_branches(db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
+def get_branches(request: Request, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
     try:
-        # Attempt to get authenticated user
+        include_employee_count = request.query_params.get('include_employee_count', 'false').lower() == 'true'
         user_role = current_user["role"]
         user_branch_id = current_user.get("branch_id")
     except:
-        # Public access with limited information
         branches = db.query(Branch).all()
-        return {
-            "branches": [{
+        branch_list = []
+        for branch in branches:
+            branch_data = {
                 "id": branch.id,
                 "branch_id": branch.branch_id,
                 "name": branch.name,
                 "location": branch.location,
                 "governorate": branch.governorate,
                 "created_at": branch.created_at.strftime("%Y-%m-%d %H:%M:%S") if branch.created_at else None,
-                "tax_rate": getattr(branch, 'tax_rate', 0.0)  # Add tax_rate for public access
-            } for branch in branches]
-        }
-    # Authorized access
+                "tax_rate": getattr(branch, 'tax_rate', 0.0)
+            }
+            if include_employee_count:
+                employee_count = db.query(func.count(User.id)).filter(User.branch_id == branch.id).scalar() or 0
+                branch_data['employee_count'] = employee_count
+                print(f"Branch {branch.id} - employee_count: {employee_count}")
+            branch_list.append(branch_data)
+        return {"branches": branch_list}
     branches = db.query(Branch).all()
     branch_list = []
     for branch in branches:
@@ -1019,9 +1023,12 @@ def get_branches(db: Session = Depends(get_db), current_user: dict = Depends(get
             "allocated_amount_syp": branch.allocated_amount_syp,
             "allocated_amount_usd": branch.allocated_amount_usd,
             "allocated_amount": branch.allocated_amount,
-            "tax_rate": getattr(branch, 'tax_rate', 0.0)  # Add tax_rate for frontend
+            "tax_rate": getattr(branch, 'tax_rate', 0.0)
         }
-        # Add financial info based on role
+        if include_employee_count:
+            employee_count = db.query(func.count(User.id)).filter(User.branch_id == branch.id).scalar() or 0
+            branch_data['employee_count'] = employee_count
+            print(f"Branch {branch.id} - employee_count: {employee_count}")
         if user_role == "director":
             branch_data.update({
                 "allocated_amount": branch.allocated_amount,
