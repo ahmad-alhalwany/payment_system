@@ -321,13 +321,34 @@ class InventoryTab(QWidget):
         # Enable updates after setup
         table.setUpdatesEnabled(True)
 
+    def show_loading(self, message="جاري تحميل البيانات..."):
+        if not hasattr(self, '_loading_label') or self._loading_label is None:
+            self._loading_label = QLabel(message, self)
+            self._loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._loading_label.setStyleSheet("background: #fffbe6; color: #e67e22; font-size: 16px; padding: 20px; border-radius: 10px;")
+            self._loading_label.setGeometry(0, 0, self.width(), 60)
+            self._loading_label.show()
+            self.repaint()
+    def hide_loading(self):
+        if hasattr(self, '_loading_label') and self._loading_label:
+            self._loading_label.hide()
+            self._loading_label.deleteLater()
+            self._loading_label = None
+    def set_filter_buttons_enabled(self, enabled: bool):
+        for btn_text in ["تطبيق", "تحديث البيانات", "تحديث الفروع"]:
+            btns = self.findChildren(ModernButton, btn_text)
+            for btn in btns:
+                btn.setEnabled(enabled)
+
     def load_data(self):
-        """Load data with optimized performance using QThread."""
+        """Load data with optimized performance using QThread and loading indicator."""
         if self.is_updating:
             self.update_pending = True
             return
         self.is_updating = True
         try:
+            self.show_loading("جاري تحميل بيانات المخزون...")
+            self.set_filter_buttons_enabled(False)
             # Prepare parameters as before
             start_date = self.date_from.date().toString("yyyy-MM-dd")
             end_date = self.date_to.date().toString("yyyy-MM-dd")
@@ -359,10 +380,13 @@ class InventoryTab(QWidget):
             self.data_worker = ApiWorker(api_call)
             self.data_worker.result_ready.connect(self._on_data_loaded)
             self.data_worker.error_occurred.connect(self._handle_unexpected_error)
+            self.data_worker.finished.connect(lambda: (self.hide_loading(), self.set_filter_buttons_enabled(True)))
             self.data_worker.start()
         except Exception as e:
             self._handle_unexpected_error(e)
             self.is_updating = False
+            self.hide_loading()
+            self.set_filter_buttons_enabled(True)
             if self.update_pending:
                 self.update_pending = False
                 QTimer.singleShot(1000, self.load_data)
