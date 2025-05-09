@@ -2,11 +2,12 @@ import os
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout,
     QMessageBox, QTableWidget, QTableWidgetItem, QWidget, 
-    QTabWidget, QLabel, QHeaderView, QFormLayout, QPushButton
+    QTabWidget, QLabel, QHeaderView, QFormLayout, QPushButton,
+    QProgressBar
 )
 
-from PyQt6.QtGui import QFont
-from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal
+from PyQt6.QtGui import QFont, QMovie
+from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QSize
 from ui.branch_management_improved import AddBranchDialog, EditBranchDialog
 from ui.custom_widgets import ModernGroupBox, ModernButton
 from ui.theme import Theme
@@ -139,6 +140,60 @@ class BranchDataCache:
                 return True
         return False
 
+class LoadingOverlay(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        layout = QVBoxLayout(self)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.spinner_label = QLabel()
+        self.movie = QMovie(":/icons/loading.gif")  # Add this resource
+        self.movie.setScaledSize(QSize(48, 48))
+        self.spinner_label.setMovie(self.movie)
+        self.movie.start()
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 0)
+        self.progress_bar.setFixedWidth(200)
+        self.progress_bar.setStyleSheet("""
+            QProgressBar {
+                border: 2px solid #f0f0f0;
+                border-radius: 5px;
+                background-color: #ffffff;
+                height: 10px;
+            }
+            QProgressBar::chunk {
+                background-color: #2ecc71;
+                border-radius: 5px;
+            }
+        """)
+        self.status_label = QLabel("جاري تحميل البيانات...")
+        self.status_label.setStyleSheet("""
+            QLabel {
+                color: #2c3e50;
+                font-size: 14px;
+                font-weight: bold;
+                background: transparent;
+            }
+        """)
+        layout.addWidget(self.spinner_label, alignment=Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.progress_bar, alignment=Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.status_label, alignment=Qt.AlignmentFlag.AlignCenter)
+        self.setStyleSheet("""
+            QWidget {
+                background-color: rgba(255, 255, 255, 0.8);
+                border-radius: 10px;
+            }
+        """)
+    def set_message(self, message):
+        self.status_label.setText(message)
+    def showEvent(self, event):
+        self.movie.start()
+        super().showEvent(event)
+    def hideEvent(self, event):
+        self.movie.stop()
+        super().hideEvent(event)
+
 class BranchManagementMixin:
     """Mixin handling all branch-related operations"""
     
@@ -149,6 +204,10 @@ class BranchManagementMixin:
         self._update_timer = QTimer()
         self._update_timer.timeout.connect(self._process_batch)
         self._pending_updates = []
+        # Pagination variables
+        self._branches_page = 1
+        self._branches_per_page = 10
+        self._branches_total_pages = 1
         
         # Smart auto-refresh timer for branches table
         self._branches_auto_refresh_timer = QTimer()
@@ -291,6 +350,23 @@ class BranchManagementMixin:
         
         layout.addWidget(self.branches_table)
         
+        # Add loading overlay
+        self.loading_overlay = LoadingOverlay(self.branches_tab)
+        self.loading_overlay.hide()
+        layout.addWidget(self.loading_overlay)
+        
+        # Pagination controls
+        pagination_layout = QHBoxLayout()
+        self.prev_page_btn = ModernButton("السابق", color="#95a5a6")
+        self.next_page_btn = ModernButton("التالي", color="#95a5a6")
+        self.page_label = QLabel()
+        self.prev_page_btn.clicked.connect(self._branches_prev_page)
+        self.next_page_btn.clicked.connect(self._branches_next_page)
+        pagination_layout.addWidget(self.prev_page_btn)
+        pagination_layout.addWidget(self.page_label)
+        pagination_layout.addWidget(self.next_page_btn)
+        layout.addLayout(pagination_layout)
+        
         # First row of buttons
         first_row_layout = QHBoxLayout()
         
@@ -348,54 +424,53 @@ class BranchManagementMixin:
     def load_branches(self, force_refresh=False):
         """Load branches from the API with optimized performance using QThread."""
         try:
+            self.loading_overlay.set_message("جاري تحميل البيانات...")
+            self.loading_overlay.show()
             if not force_refresh:
                 cached_data = self.branch_cache.get('branches', 'basic')
                 if cached_data:
                     self._update_branches_table(cached_data)
+                    self.loading_overlay.hide()
                     return
-
-            # Show loading indicator
             self.branches_table.setRowCount(1)
             loading_item = QTableWidgetItem("جاري تحميل البيانات...")
             loading_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.branches_table.setItem(0, 0, loading_item)
             self.branches_table.setSpan(0, 0, 1, 8)
-
-            # Use worker to load data in background
             self.branch_load_worker = BranchLoadWorker(API_BASE_URL, self.token)
             self.branch_load_worker.branches_loaded.connect(self._on_branches_loaded)
             self.branch_load_worker.error_occurred.connect(self._on_branches_error)
             self.branch_load_worker.start()
         except Exception as e:
+            self.loading_overlay.hide()
             QMessageBox.critical(self, "خطأ", f"حدث خطأ: {str(e)}")
 
     def _on_branches_loaded(self, branches):
         """Handle loaded branches data"""
         self.branch_cache.set('branches', branches, 'basic')
         self._update_branches_table(branches)
+        self.loading_overlay.hide()
 
     def _on_branches_error(self, msg):
+        self.loading_overlay.hide()
         QMessageBox.warning(self, "خطأ", msg)
 
     def _update_branches_table(self, branches):
         """Update branches table with batched processing"""
+        # Pagination logic
+        total = len(branches)
+        self._branches_total_pages = max(1, (total + self._branches_per_page - 1) // self._branches_per_page)
+        self._branches_page = min(self._branches_page, self._branches_total_pages)
+        start = (self._branches_page - 1) * self._branches_per_page
+        end = start + self._branches_per_page
+        page_branches = branches[start:end]
         # Clear existing rows while preserving column widths
         self.branches_table.setRowCount(0)
-        
-        # Pre-allocate rows for better performance
-        self.branches_table.setRowCount(len(branches))
-        
-        # Process branches in batches
-        for i in range(0, len(branches), self._batch_size):
-            batch = branches[i:i + self._batch_size]
-            self._queue_update(lambda b=batch, start=i: self._process_branch_batch(b, start))
-            
-    def _process_branch_batch(self, batch, start_row):
-        """Process a batch of branches and display correct tax rate from backend only"""
-        for idx, branch in enumerate(batch):
+        self.branches_table.setRowCount(len(page_branches))
+        for i, branch in enumerate(page_branches):
             if not isinstance(branch, dict):
                 continue
-            row_position = start_row + idx
+            row_position = i
             branch_id = branch.get('id')
             tax_rate = branch.get('tax_rate', 0)
             if tax_rate < 1 and tax_rate != 0:
@@ -417,12 +492,33 @@ class BranchManagementMixin:
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.branches_table.setItem(row_position, col, item)
         self.branches_table.viewport().update()
+        self._update_pagination_label()
+
+    def _update_pagination_label(self):
+        self.page_label.setText(f"صفحة {self._branches_page} من {self._branches_total_pages}")
+        self.prev_page_btn.setEnabled(self._branches_page > 1)
+        self.next_page_btn.setEnabled(self._branches_page < self._branches_total_pages)
+
+    def _branches_next_page(self):
+        if self._branches_page < self._branches_total_pages:
+            self._branches_page += 1
+            cached_data = self.branch_cache.get('branches', 'basic')
+            if cached_data:
+                self._update_branches_table(cached_data)
+
+    def _branches_prev_page(self):
+        if self._branches_page > 1:
+            self._branches_page -= 1
+            cached_data = self.branch_cache.get('branches', 'basic')
+            if cached_data:
+                self._update_branches_table(cached_data)
 
     def add_branch(self):
         """Open dialog to add a new branch."""
         dialog = AddBranchDialog(self.token, self)
         if dialog.exec() == 1:  # If dialog was accepted
-            self.branch_cache.invalidate('branches')
+            if hasattr(self, 'branch_cache'):
+                self.branch_cache.invalidate('branches')
             self.load_branches()  # Refresh the branches list
             self.load_branches_for_filter()  # Refresh branch filters
             self.load_dashboard_data()  # Refresh dashboard data
@@ -448,7 +544,8 @@ class BranchManagementMixin:
                 branch_data = response.json()
                 dialog = EditBranchDialog(branch_data, self.token, self)
                 if dialog.exec() == 1:  # If dialog was accepted
-                    self.branch_cache.invalidate('branches')
+                    if hasattr(self, 'branch_cache'):
+                        self.branch_cache.invalidate('branches')
                     self.load_branches()  # Refresh the branches list
                     self.load_branches_for_filter()  # Refresh branch filters
             else:
@@ -489,7 +586,8 @@ class BranchManagementMixin:
                 
                 if response.status_code == 204:
                     QMessageBox.information(self, "نجاح", "تم حذف الفرع بنجاح")
-                    self.branch_cache.invalidate('branches')
+                    if hasattr(self, 'branch_cache'):
+                        self.branch_cache.invalidate('branches')
                     self.load_branches()  # Refresh the branches list
                     self.load_branches_for_filter()  # Refresh branch filters
                     self.load_dashboard_data()  # Refresh dashboard data
