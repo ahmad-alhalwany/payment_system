@@ -1,5 +1,5 @@
 from PyQt6.QtWidgets import (
-    QGridLayout, QGroupBox, QLabel, QComboBox, QDateEdit,
+    QGridLayout, QDialog, QLabel, QComboBox, QDateEdit,
     QTableWidget, QTableWidgetItem, QFileDialog, QMessageBox, 
     QVBoxLayout, QHBoxLayout, QHeaderView, QWidget
 )
@@ -13,15 +13,21 @@ from api.client import APIClient
 class ReportWorker(QThread):
     result_ready = pyqtSignal(dict, str)
     error_occurred = pyqtSignal(str)
+    progress_updated = pyqtSignal(str)
     def __init__(self, url, headers, params, report_type):
         super().__init__()
         self.url = url
         self.headers = headers
         self.params = params
         self.report_type = report_type
+        self._is_cancelled = False
     def run(self):
         try:
-            response = requests.get(self.url, headers=self.headers, params=self.params)
+            self.progress_updated.emit("جاري تحميل التقرير...")
+            response = requests.get(self.url, headers=self.headers, params=self.params, timeout=30)
+            if self._is_cancelled:
+                self.progress_updated.emit("تم إلغاء التحميل.")
+                return
             if response.status_code == 200:
                 self.result_ready.emit(response.json(), self.report_type)
             else:
@@ -33,6 +39,8 @@ class ReportWorker(QThread):
                 self.error_occurred.emit(msg)
         except Exception as e:
             self.error_occurred.emit(str(e))
+    def cancel(self):
+        self._is_cancelled = True
 
 class ReportHandlerMixin:
     """Mixin class handling report generation and export functionality"""
@@ -50,6 +58,8 @@ class ReportHandlerMixin:
         self.api_url = None
         self.api_client = None
         self.branch_id_to_name = {}
+        self._report_worker = None
+        self._loading_label = None
     
     def set_parent(self, parent):
         """Set the parent widget for showing messages"""
@@ -70,6 +80,20 @@ class ReportHandlerMixin:
         """Show an error message using QMessageBox"""
         if self.parent:
             QMessageBox.warning(self.parent, "خطأ", message)
+    
+    def show_loading(self, message="جاري التحميل..."):
+        if self.parent and not self._loading_label:
+            self._loading_label = QLabel(message, self.parent)
+            self._loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._loading_label.setStyleSheet("background: #fffbe6; color: #e67e22; font-size: 16px; padding: 20px; border-radius: 10px;")
+            self._loading_label.setGeometry(0, 0, self.parent.width(), 60)
+            self._loading_label.show()
+            self.parent.repaint()
+    def hide_loading(self):
+        if self._loading_label:
+            self._loading_label.hide()
+            self._loading_label.deleteLater()
+            self._loading_label = None
     
     def setup_reports_tab(self):
         """Set up the reports tab."""
@@ -159,7 +183,9 @@ class ReportHandlerMixin:
         self.reports_tab.setLayout(layout)
 
     def generate_report(self):
-        """Generate a report based on the selected options."""
+        if self._report_worker and self._report_worker.isRunning():
+            self._report_worker.cancel()
+            self._report_worker.wait()
         report_type_map = {
             "تقرير التحويلات": "transactions",
             "تقرير الفروع": "branch",
@@ -193,12 +219,14 @@ class ReportHandlerMixin:
         else:
             self.show_error("نوع التقرير غير مدعوم")
             return
-        self.show_message("جاري تحميل التقرير...")
+        self.show_loading("جاري تحميل التقرير...")
         self.report_table.setRowCount(0)
-        self.report_worker = ReportWorker(url, headers, params, report_type)
-        self.report_worker.result_ready.connect(self._on_report_data_ready)
-        self.report_worker.error_occurred.connect(self._on_report_error)
-        self.report_worker.start()
+        self._report_worker = ReportWorker(url, headers, params, report_type)
+        self._report_worker.result_ready.connect(self._on_report_data_ready)
+        self._report_worker.error_occurred.connect(self._on_report_error)
+        self._report_worker.progress_updated.connect(self._on_report_progress)
+        self._report_worker.finished.connect(self.hide_loading)
+        self._report_worker.start()
 
     def _on_report_data_ready(self, data, report_type):
         if report_type == "transactions":
@@ -330,73 +358,59 @@ class ReportHandlerMixin:
     def _on_report_error(self, msg):
         self.show_error(msg)
 
+    def _on_report_progress(self, msg):
+        if self._loading_label:
+            self._loading_label.setText(msg)
+
     def export_pdf(self):
-        """Export the current report as PDF."""
+        """Export the current report as PDF with loading indicator."""
         if self.report_table.rowCount() == 0:
             QMessageBox.warning(self, "تنبيه", "لا توجد بيانات للتصدير. الرجاء إنشاء تقرير أولاً.")
             return
-            
         try:
+            self.show_loading("جاري تصدير التقرير إلى PDF...")
+            self._set_export_buttons_enabled(False)
             from PyQt6.QtPrintSupport import QPrinter
             from PyQt6.QtGui import QTextDocument
-            
-            # Get file name from user
             file_path, _ = QFileDialog.getSaveFileName(
                 self, "حفظ التقرير كـ PDF", "", "ملفات PDF (*.pdf)"
             )
-            
             if not file_path:
-                return  # User canceled
-                
-            # Add .pdf extension if not present
+                self.hide_loading()
+                self._set_export_buttons_enabled(True)
+                return
             if not file_path.lower().endswith('.pdf'):
                 file_path += '.pdf'
-                
-            # Create printer
             printer = QPrinter(QPrinter.PrinterMode.HighResolution)
             printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
             printer.setOutputFileName(file_path)
-            
-            # Create HTML content
             html = "<html><head><style>"
             html += "table { width: 100%; border-collapse: collapse; direction: rtl; }"
             html += "th, td { border: 1px solid #000; padding: 8px; text-align: right; }"
             html += "th { background-color: #f2f2f2; }"
             html += "h1 { text-align: center; color: #2c3e50; }"
-            html += ".status-completed { background-color: #d5f5e3; }"  # Light green
-            html += ".status-processing { background-color: #d6eaf8; }" # Light blue
-            html += ".status-cancelled { background-color: #f5b7b1; }"  # Light red
-            html += ".status-rejected { background-color: #f1948a; }"   # Darker red
-            html += ".status-on_hold { background-color: #fdebd0; }"    # Light orange
+            html += ".status-completed { background-color: #d5f5e3; }"
+            html += ".status-processing { background-color: #d6eaf8; }"
+            html += ".status-cancelled { background-color: #f5b7b1; }"
+            html += ".status-rejected { background-color: #f1948a; }"
+            html += ".status-on_hold { background-color: #fdebd0; }"
             html += "</style></head><body>"
-            
-            # Add title based on report type
             report_title = self.report_type.currentText()
             html += f"<h1>{report_title}</h1>"
-            
-            # Add date range
             from_date = self.from_date.date().toString("yyyy-MM-dd")
             to_date = self.to_date.date().toString("yyyy-MM-dd")
             html += f"<p style='text-align: center;'>الفترة من {from_date} إلى {to_date}</p>"
-            
-            # Create table
             html += "<table><tr>"
-            
-            # Add headers
             for col in range(self.report_table.columnCount()):
                 header_text = self.report_table.horizontalHeaderItem(col).text()
                 html += f"<th>{header_text}</th>"
             html += "</tr>"
-            
-            # Add data rows
             for row in range(self.report_table.rowCount()):
                 html += "<tr>"
-                
-                # Get status for styling
                 status_item = None
                 status_class = ""
                 if self.report_type.currentText() == "تقرير التحويلات":
-                    status_item = self.report_table.item(row, 6)  # Status column
+                    status_item = self.report_table.item(row, 6)
                     if status_item:
                         status_text = status_item.text().lower()
                         if "مكتمل" in status_text:
@@ -409,96 +423,75 @@ class ReportHandlerMixin:
                             status_class = "status-rejected"
                         elif "معلق" in status_text:
                             status_class = "status-on_hold"
-                
                 for col in range(self.report_table.columnCount()):
                     item = self.report_table.item(row, col)
                     text = item.text() if item else ""
-                    
-                    # Apply status class to the entire row for transaction reports
                     if self.report_type.currentText() == "تقرير التحويلات" and status_class:
                         html += f"<td class='{status_class}'>{text}</td>"
                     else:
                         html += f"<td>{text}</td>"
                 html += "</tr>"
-            
             html += "</table></body></html>"
-            
-            # Print to PDF
             document = QTextDocument()
             document.setHtml(html)
             document.print(printer)
-            
+            self.hide_loading()
+            self._set_export_buttons_enabled(True)
             QMessageBox.information(self, "نجاح", f"تم تصدير التقرير بنجاح إلى:\n{file_path}")
-            
         except Exception as e:
+            self.hide_loading()
+            self._set_export_buttons_enabled(True)
             print(f"Error exporting to PDF: {e}")
             QMessageBox.warning(self, "خطأ", f"تعذر تصدير التقرير: {str(e)}")
 
     def export_excel(self):
-        """Export the current report as Excel."""
+        """Export the current report as Excel with loading indicator."""
         if self.report_table.rowCount() == 0:
             QMessageBox.warning(self, "تنبيه", "لا توجد بيانات للتصدير. الرجاء إنشاء تقرير أولاً.")
             return
-            
         try:
-            # Get file name from user
+            self.show_loading("جاري تصدير التقرير إلى Excel...")
+            self._set_export_buttons_enabled(False)
             file_path, _ = QFileDialog.getSaveFileName(
                 self, "حفظ التقرير كـ Excel", "", "ملفات Excel (*.xlsx)"
             )
-            
             if not file_path:
-                return  # User canceled
-                
-            # Add .xlsx extension if not present
+                self.hide_loading()
+                self._set_export_buttons_enabled(True)
+                return
             if not file_path.lower().endswith('.xlsx'):
                 file_path += '.xlsx'
-                
-            # Create Excel workbook
             import openpyxl
             from openpyxl.styles import Font, Alignment, PatternFill
-            
             wb = openpyxl.Workbook()
             ws = wb.active
-            
-            # Set title based on report type
             report_title = self.report_type.currentText()
             ws.title = report_title
-            
-            # Add title
             ws.merge_cells('A1:G1')
             title_cell = ws['A1']
             title_cell.value = report_title
             title_cell.font = Font(size=16, bold=True)
             title_cell.alignment = Alignment(horizontal='center')
-            
-            # Add date range
             from_date = self.from_date.date().toString("yyyy-MM-dd")
             to_date = self.to_date.date().toString("yyyy-MM-dd")
             ws.merge_cells('A2:G2')
             date_cell = ws['A2']
             date_cell.value = f"الفترة من {from_date} إلى {to_date}"
             date_cell.alignment = Alignment(horizontal='center')
-            
-            # Add headers
             header_fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
             header_font = Font(bold=True)
-            
             for col in range(self.report_table.columnCount()):
                 header_text = self.report_table.horizontalHeaderItem(col).text()
                 cell = ws.cell(row=4, column=col+1, value=header_text)
                 cell.fill = header_fill
                 cell.font = header_font
                 cell.alignment = Alignment(horizontal='right')
-            
-            # Add data rows
             for row in range(self.report_table.rowCount()):
                 for col in range(self.report_table.columnCount()):
                     item = self.report_table.item(row, col)
                     text = item.text() if item else ""
                     cell = ws.cell(row=row+5, column=col+1, value=text)
                     cell.alignment = Alignment(horizontal='right')
-            
-            # Auto-adjust column widths
             for col in ws.columns:
                 max_length = 0
                 column = col[0].column_letter
@@ -507,63 +500,60 @@ class ReportHandlerMixin:
                         max_length = max(max_length, len(str(cell.value)))
                 adjusted_width = (max_length + 2)
                 ws.column_dimensions[column].width = adjusted_width
-            
-            # Save the workbook
             wb.save(file_path)
-            
+            self.hide_loading()
+            self._set_export_buttons_enabled(True)
             QMessageBox.information(self, "نجاح", f"تم تصدير التقرير بنجاح إلى:\n{file_path}")
-            
         except ImportError:
+            self.hide_loading()
+            self._set_export_buttons_enabled(True)
             QMessageBox.warning(self, "خطأ", "مكتبة openpyxl غير متوفرة. الرجاء تثبيتها باستخدام pip install openpyxl")
         except Exception as e:
+            self.hide_loading()
+            self._set_export_buttons_enabled(True)
             print(f"Error exporting to Excel: {e}")
             QMessageBox.warning(self, "خطأ", f"تعذر تصدير التقرير: {str(e)}")
 
+    def _set_export_buttons_enabled(self, enabled: bool):
+        """Enable or disable export buttons during export operations."""
+        if hasattr(self, 'reports_tab'):
+            for btn_text in ["تصدير PDF", "تصدير Excel", "طباعة"]:
+                btns = self.reports_tab.findChildren(ModernButton, btn_text)
+                for btn in btns:
+                    btn.setEnabled(enabled)
+
     def print_report(self):
-        """Print the current report."""
+        """Print the current report with loading indicator."""
         if self.report_table.rowCount() == 0:
             QMessageBox.warning(self, "تنبيه", "لا توجد بيانات للطباعة. الرجاء إنشاء تقرير أولاً.")
             return
-            
         try:
+            self.show_loading("جاري تجهيز التقرير للطباعة...")
+            self._set_export_buttons_enabled(False)
             from PyQt6.QtPrintSupport import QPrinter, QPrintDialog
             from PyQt6.QtGui import QTextDocument
-            
-            # Create printer
             printer = QPrinter(QPrinter.PrinterMode.HighResolution)
-            
-            # Show print dialog
             print_dialog = QPrintDialog(printer, self)
             if print_dialog.exec() != QDialog.DialogCode.Accepted:
+                self.hide_loading()
+                self._set_export_buttons_enabled(True)
                 return
-            
-            # Create HTML content
             html = "<html><head><style>"
             html += "table { width: 100%; border-collapse: collapse; direction: rtl; }"
             html += "th, td { border: 1px solid #000; padding: 8px; text-align: right; }"
             html += "th { background-color: #f2f2f2; }"
             html += "h1 { text-align: center; color: #2c3e50; }"
             html += "</style></head><body>"
-            
-            # Add title based on report type
             report_title = self.report_type.currentText()
             html += f"<h1>{report_title}</h1>"
-            
-            # Add date range
             from_date = self.from_date.date().toString("yyyy-MM-dd")
             to_date = self.to_date.date().toString("yyyy-MM-dd")
             html += f"<p style='text-align: center;'>الفترة من {from_date} إلى {to_date}</p>"
-            
-            # Create table
             html += "<table><tr>"
-            
-            # Add headers
             for col in range(self.report_table.columnCount()):
                 header_text = self.report_table.horizontalHeaderItem(col).text()
                 html += f"<th>{header_text}</th>"
             html += "</tr>"
-            
-            # Add data rows
             for row in range(self.report_table.rowCount()):
                 html += "<tr>"
                 for col in range(self.report_table.columnCount()):
@@ -571,15 +561,15 @@ class ReportHandlerMixin:
                     text = item.text() if item else ""
                     html += f"<td>{text}</td>"
                 html += "</tr>"
-            
             html += "</table></body></html>"
-            
-            # Print
             document = QTextDocument()
             document.setHtml(html)
             document.print(printer)
-            
+            self.hide_loading()
+            self._set_export_buttons_enabled(True)
         except Exception as e:
+            self.hide_loading()
+            self._set_export_buttons_enabled(True)
             print(f"Error printing report: {e}")
             QMessageBox.warning(self, "خطأ", f"تعذر طباعة التقرير: {str(e)}")
 
