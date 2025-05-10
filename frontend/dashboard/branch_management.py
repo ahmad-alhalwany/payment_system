@@ -404,7 +404,7 @@ class BranchManagementMixin:
         second_row_layout.addWidget(add_tax_button)
         
         refresh_button = ModernButton("تحديث", color=Theme.ACCENT)
-        refresh_button.clicked.connect(self.load_branches)
+        refresh_button.clicked.connect(self.force_refresh_branches)
         second_row_layout.addWidget(refresh_button)
         
         layout.addLayout(second_row_layout)
@@ -1067,6 +1067,11 @@ class BranchManagementMixin:
             self.branch_load_worker.quit()
             self.branch_load_worker.wait()
         super().closeEvent(event)
+
+    def force_refresh_branches(self):
+        """Force refresh branches: clear cache and reload from server"""
+        self.branch_cache.invalidate('branches')
+        self.load_branches(force_refresh=True)
 
 class BranchLoadWorker(QThread):
     branches_loaded = pyqtSignal(list)

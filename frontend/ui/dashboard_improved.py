@@ -2268,7 +2268,8 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
             print(f"Error loading transaction stats: {e}")
 
     def refresh_employees(self):
-        self._employees_cache = None
+        if hasattr(self, '_employee_cache'):
+            self._employee_cache.clear()
         self.load_employees()
 
     def update_employees_data(self, data):

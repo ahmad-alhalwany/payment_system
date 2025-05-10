@@ -563,6 +563,10 @@ class OptimizedTableManager(QObject):
                         if current_item is None or current_item.text() != value:
                             item = QTableWidgetItem(value)
                             
+                            # تعيين بيانات الصف كاملة في UserRole للعمود الأول فقط
+                            if col == 0:
+                                item.setData(Qt.ItemDataRole.UserRole, row_data)
+                            
                             # Apply special formatting
                             if isinstance(key, str):
                                 if key == 'amount':
