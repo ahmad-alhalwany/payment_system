@@ -227,7 +227,7 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
         load_type = 'basic'  # Default to basic stats
         if current_tab == self.transactions_tab:
             load_type = 'transactions'
-        elif current_tab == self.activity_tab:
+        elif hasattr(self, 'dashboard_tab') and current_tab == self.dashboard_tab:
             load_type = 'activity'
 
         # Start loading thread for specific data type

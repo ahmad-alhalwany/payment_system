@@ -177,6 +177,7 @@ class InventoryTab(QWidget):
         self.date_from.setStyleSheet(Theme.INPUT_STYLE)
         self.date_from.setCalendarPopup(True)
         self.date_from.setDate(QDate.currentDate().addDays(-30))
+        self.date_from.setDisplayFormat("dd/MM/yyyy")
         layout.addWidget(self.date_from)
         
         date_to_label = QLabel("إلى تاريخ:")
@@ -187,6 +188,7 @@ class InventoryTab(QWidget):
         self.date_to.setStyleSheet(Theme.INPUT_STYLE)
         self.date_to.setCalendarPopup(True)
         self.date_to.setDate(QDate.currentDate())
+        self.date_to.setDisplayFormat("dd/MM/yyyy")
         layout.addWidget(self.date_to)
         
     def _add_branch_currency_filters(self, layout: QHBoxLayout):

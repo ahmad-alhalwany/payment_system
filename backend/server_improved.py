@@ -2312,6 +2312,7 @@ def tax_summary_endpoint(
         # Convert string dates to datetime objects
         start = datetime.strptime(start_date, "%Y-%m-%d")
         end = datetime.strptime(end_date, "%Y-%m-%d")
+        end = end.replace(hour=23, minute=59, second=59, microsecond=999999)
 
         # Build base query for transactions
         tx_query = db.query(Transaction)
