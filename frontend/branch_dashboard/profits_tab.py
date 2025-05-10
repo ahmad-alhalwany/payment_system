@@ -41,6 +41,7 @@ class ProfitsWorker(QThread):
 class ProfitsTabMixin:
     def setup_profits_tab(self):
         """Set up the profits tab with modern UI components."""
+        self.profits_tab = QWidget()
         layout = QVBoxLayout()
         
         # Summary Section
@@ -107,6 +108,7 @@ class ProfitsTabMixin:
         
         self.profits_date_from = QDateEdit()
         self.profits_date_from.setCalendarPopup(True)
+        self.profits_date_from.setDisplayFormat("dd/MM/yyyy")
         self.profits_date_from.setDate(QDate.currentDate().addMonths(-1))
         filters_layout.addWidget(self.profits_date_from)
         
@@ -115,6 +117,7 @@ class ProfitsTabMixin:
         
         self.profits_date_to = QDateEdit()
         self.profits_date_to.setCalendarPopup(True)
+        self.profits_date_to.setDisplayFormat("dd/MM/yyyy")
         self.profits_date_to.setDate(QDate.currentDate())
         filters_layout.addWidget(self.profits_date_to)
         
@@ -130,6 +133,11 @@ class ProfitsTabMixin:
         apply_filters_btn = ModernButton("تطبيق", color="#2ecc71")
         apply_filters_btn.clicked.connect(self.load_profits_data)
         filters_layout.addWidget(apply_filters_btn)
+
+        # زر تحديث جديد
+        refresh_btn = ModernButton("تحديث", color="#3498db")
+        refresh_btn.clicked.connect(self.force_refresh_profits)
+        filters_layout.addWidget(refresh_btn)
         
         filters_group.setLayout(filters_layout)
         layout.addWidget(filters_group)
@@ -184,10 +192,11 @@ class ProfitsTabMixin:
         self._is_loading_profits = False
     
     def load_profits_data(self):
-        """Load profits data from the server using QThread."""
+        """Load profits data using QThread"""
         if getattr(self, '_is_loading_profits', False):
             return
         self._is_loading_profits = True
+        
         # مؤشر تحميل في الجدول
         self.profits_table.setRowCount(1)
         loading_item = QTableWidgetItem("جاري التحميل ...")
@@ -195,6 +204,7 @@ class ProfitsTabMixin:
         self.profits_table.setItem(0, 0, loading_item)
         for col in range(1, self.profits_table.columnCount()):
             self.profits_table.setItem(0, col, QTableWidgetItem(""))
+            
         # إعداد المعطيات
         start_date = self.profits_date_from.date().toString("yyyy-MM-dd")
         end_date = self.profits_date_to.date().toString("yyyy-MM-dd")
@@ -205,34 +215,47 @@ class ProfitsTabMixin:
         }
         if currency_filter != "الكل":
             params["currency"] = "SYP" if currency_filter == "ليرة سورية" else "USD"
+            
         # تشغيل الخيط
         self.profits_worker = ProfitsWorker(self.api_url, self.branch_id, self.token, params)
+        self._profits_worker_ref = self.profits_worker  # احتفظ بمرجع إضافي
         self.profits_worker.finished.connect(self.on_profits_loaded)
         self.profits_worker.start()
-
+    
     def on_profits_loaded(self, response, summary_response, stats_response, error):
-        self._is_loading_profits = False
-        if error:
-            self.profits_table.setRowCount(1)
-            error_item = QTableWidgetItem(f"فشل التحميل: {error}")
-            error_item.setForeground(QColor("#e74c3c"))
-            self.profits_table.setItem(0, 0, error_item)
-            for col in range(1, self.profits_table.columnCount()):
-                self.profits_table.setItem(0, col, QTableWidgetItem(""))
-            return
-        if (response is None or summary_response is None or stats_response is None or
-            response.status_code != 200 or summary_response.status_code != 200 or stats_response.status_code != 200):
-            self.profits_table.setRowCount(1)
-            error_item = QTableWidgetItem("فشل تحميل البيانات من الخادم")
-            error_item.setForeground(QColor("#e74c3c"))
-            self.profits_table.setItem(0, 0, error_item)
-            for col in range(1, self.profits_table.columnCount()):
-                self.profits_table.setItem(0, col, QTableWidgetItem(""))
-            return
-        data = response.json()
-        summary_data = summary_response.json()
-        stats_data = stats_response.json()
-        self.update_profits_display(data, summary_data, stats_data)
+        # لا تخرج من الدالة إلا بعد إعادة تعيين المتحول
+        try:
+            if error:
+                self.profits_table.setRowCount(1)
+                error_item = QTableWidgetItem(f"فشل التحميل: {error}")
+                error_item.setForeground(QColor("#e74c3c"))
+                self.profits_table.setItem(0, 0, error_item)
+                for col in range(1, self.profits_table.columnCount()):
+                    self.profits_table.setItem(0, col, QTableWidgetItem(""))
+                self.statusBar().showMessage(f"فشل تحميل الأرباح: {error}", 5000)
+                return
+            if (response is None or summary_response is None or stats_response is None or
+                response.status_code != 200 or summary_response.status_code != 200 or stats_response.status_code != 200):
+                if response is not None:
+                    print("Profits response:", getattr(response, 'text', None))
+                if summary_response is not None:
+                    print("Summary response:", getattr(summary_response, 'text', None))
+                if stats_response is not None:
+                    print("Stats response:", getattr(stats_response, 'text', None))
+                self.profits_table.setRowCount(1)
+                error_item = QTableWidgetItem("فشل تحميل البيانات من الخادم (تحقق من الصلاحيات أو التواريخ)")
+                error_item.setForeground(QColor("#e74c3c"))
+                self.profits_table.setItem(0, 0, error_item)
+                for col in range(1, self.profits_table.columnCount()):
+                    self.profits_table.setItem(0, col, QTableWidgetItem(""))
+                self.statusBar().showMessage("فشل تحميل الأرباح: تحقق من الصلاحيات أو التواريخ أو وجود بيانات", 5000)
+                return
+            data = response.json()
+            summary_data = summary_response.json()
+            stats_data = stats_response.json()
+            self.update_profits_display(data, summary_data, stats_data)
+        finally:
+            self._is_loading_profits = False
     
     def update_profits_display(self, data, summary_data, stats_data):
         """Update the profits display with the received data."""
@@ -281,60 +304,48 @@ class ProfitsTabMixin:
             self.profits_table.setRowCount(len(transactions))
             
             for row, tx in enumerate(transactions):
-                # Add row to table with enhanced formatting
-                self.profits_table.setItem(row, 0, QTableWidgetItem(tx.get('id', '')))
-                
-                # Format date
-                date = tx.get('date', '')
-                date_item = QTableWidgetItem(date)
-                date_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                self.profits_table.setItem(row, 1, date_item)
-                
-                # Format amounts with thousand separators
-                benefited_amount = float(tx.get('benefited_amount', 0))
-                benefited_item = QTableWidgetItem(f"{benefited_amount:,.2f}")
-                benefited_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-                self.profits_table.setItem(row, 2, benefited_item)
-                
-                tax_rate = float(tx.get('tax_rate', 0))
-                tax_rate_item = QTableWidgetItem(f"{tax_rate:.2f}%")
-                tax_rate_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                self.profits_table.setItem(row, 3, tax_rate_item)
-                
-                tax_amount = float(tx.get('tax_amount', 0))
-                tax_item = QTableWidgetItem(f"{tax_amount:,.2f}")
-                tax_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-                self.profits_table.setItem(row, 4, tax_item)
-                
-                # Show profits breakdown
-                benefited_profit = float(tx.get('benefited_profit', 0))
-                benefited_profit_item = QTableWidgetItem(f"{benefited_profit:,.2f}")
-                benefited_profit_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-                self.profits_table.setItem(row, 5, benefited_profit_item)
-                
-                tax_profit = float(tx.get('tax_profit', 0))
-                tax_profit_item = QTableWidgetItem(f"{tax_profit:,.2f}")
-                tax_profit_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-                self.profits_table.setItem(row, 6, tax_profit_item)
-                
-                total_profit = benefited_profit + tax_profit
-                total_profit_item = QTableWidgetItem(f"{total_profit:,.2f}")
-                total_profit_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-                if total_profit > avg_profit_syp and tx.get('currency') == 'SYP' or total_profit > avg_profit_usd and tx.get('currency') == 'USD':
-                    total_profit_item.setForeground(QColor('#27ae60'))  # Green for above average
-                self.profits_table.setItem(row, 7, total_profit_item)
-                
-                currency_item = QTableWidgetItem(tx.get('currency', ''))
-                currency_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                self.profits_table.setItem(row, 8, currency_item)
-                
-                # Status with color
-                status = tx.get('status', '')
-                status_item = QTableWidgetItem(self.get_status_text(status))
-                status_item.setForeground(self.get_status_color(status))
-                status_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                self.profits_table.setItem(row, 9, status_item)
-            
+                try:
+                    self.profits_table.setItem(row, 0, QTableWidgetItem(str(tx.get('id', ''))))
+                    date = str(tx.get('date', ''))
+                    date_item = QTableWidgetItem(date)
+                    date_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                    self.profits_table.setItem(row, 1, date_item)
+                    benefited_amount = float(tx.get('benefited_amount', 0))
+                    benefited_item = QTableWidgetItem(f"{benefited_amount:,.2f}")
+                    benefited_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                    self.profits_table.setItem(row, 2, benefited_item)
+                    tax_rate = float(tx.get('tax_rate', 0))
+                    tax_rate_item = QTableWidgetItem(f"{tax_rate:.2f}%")
+                    tax_rate_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                    self.profits_table.setItem(row, 3, tax_rate_item)
+                    tax_amount = float(tx.get('tax_amount', 0))
+                    tax_item = QTableWidgetItem(f"{tax_amount:,.2f}")
+                    tax_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                    self.profits_table.setItem(row, 4, tax_item)
+                    benefited_profit = float(tx.get('benefited_profit', 0))
+                    benefited_profit_item = QTableWidgetItem(f"{benefited_profit:,.2f}")
+                    benefited_profit_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                    self.profits_table.setItem(row, 5, benefited_profit_item)
+                    tax_profit = float(tx.get('tax_profit', 0))
+                    tax_profit_item = QTableWidgetItem(f"{tax_profit:,.2f}")
+                    tax_profit_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                    self.profits_table.setItem(row, 6, tax_profit_item)
+                    total_profit = benefited_profit + tax_profit
+                    total_profit_item = QTableWidgetItem(f"{total_profit:,.2f}")
+                    total_profit_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                    if (tx.get('currency') == 'SYP' and total_profit > avg_profit_syp) or (tx.get('currency') == 'USD' and total_profit > avg_profit_usd):
+                        total_profit_item.setForeground(QColor('#27ae60'))
+                    self.profits_table.setItem(row, 7, total_profit_item)
+                    currency_item = QTableWidgetItem(str(tx.get('currency', '')))
+                    currency_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                    self.profits_table.setItem(row, 8, currency_item)
+                    status = str(tx.get('status', ''))
+                    status_item = QTableWidgetItem(self.get_status_text(status))
+                    status_item.setForeground(self.get_status_color(status))
+                    status_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                    self.profits_table.setItem(row, 9, status_item)
+                except Exception as e:
+                    print(f"Exception in filling row {row}: {e}")
         except Exception as e:
             print(f"Error in update_profits_display: {e}")
     
@@ -393,4 +404,9 @@ class ProfitsTabMixin:
                         writer.writerow(row_data)
                         
         except Exception as e:
-            print(f"Error exporting profits report: {e}") 
+            print(f"Error exporting profits report: {e}")
+
+    def force_refresh_profits(self):
+        """إعادة تحميل بيانات الأرباح بغض النظر عن حالة التحميل السابقة"""
+        self._is_loading_profits = False
+        self.load_profits_data() 

@@ -107,7 +107,6 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
         
         # Initialize UI first
         self.setup_initial_ui()
-        
         # Initialize update timers
         self.financial_update_timer = QTimer()
         self.financial_update_timer.timeout.connect(self.update_financial_status)
@@ -168,8 +167,9 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
             self.statusBar().showMessage("جاري تحميل البيانات التفصيلية...")
             self._loading_priority['tertiary'] = True
             
-            # Load initial profits data
-            self.load_profits_data()
+            # Load initial profits data using ProfitsTabMixin's method
+            if hasattr(self, 'load_profits_data'):
+                self.load_profits_data()
             
             # Load initial transactions
             self.load_transactions(branch_id=self.branch_id)
@@ -566,7 +566,8 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
             headers = {"Authorization": f"Bearer {self.token}"}
             response = requests.get(
                 f"{self.api_url}/branches/{self.branch_id}",
-                headers=headers
+                headers=headers,
+                timeout=5  # Add timeout
             )
             
             if response.status_code == 200:
@@ -1741,7 +1742,7 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
                 self._pending_requests.remove(url)
             return None
 
-    def load_profits_data(self):
+    def load_profits_data_cached(self):
         """Load profits data with caching"""
         try:
             current_time = time.time()

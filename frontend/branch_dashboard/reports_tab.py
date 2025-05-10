@@ -8,6 +8,7 @@ import csv
 from datetime import datetime
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from utils.helpers import get_status_arabic, get_status_color
+from PyQt6.QtGui import QColor
 
 class ReportWorker(QThread):
     finished = pyqtSignal(object, object)
@@ -67,6 +68,27 @@ class ReportWorker(QThread):
                     self.finished.emit(None, f"فشل تحميل التحويلات الواردة: {incoming_response.status_code}")
                     return
             self.finished.emit({"transactions": all_transactions, "total_pages": total_pages}, None)
+        except Exception as e:
+            self.finished.emit(None, str(e))
+
+class EmployeeReportWorker(QThread):
+    finished = pyqtSignal(object, object)
+    def __init__(self, api_url, branch_id, token, params):
+        super().__init__()
+        self.api_url = api_url
+        self.branch_id = branch_id
+        self.token = token
+        self.params = params
+    def run(self):
+        try:
+            headers = {"Authorization": f"Bearer {self.token}"}
+            response = requests.get(
+                f"{self.api_url}/reports/employees/",
+                params=self.params,
+                headers=headers,
+                timeout=15
+            )
+            self.finished.emit(response, None)
         except Exception as e:
             self.finished.emit(None, str(e))
 
@@ -314,4 +336,54 @@ class ReportsTabMixin:
         with open(path, 'w', newline='', encoding='utf-8-sig') as f:
             writer = csv.writer(f)
             writer.writerow(headers)
-            writer.writerows(rows)                            
+            writer.writerows(rows)
+
+    def generate_employee_report(self):
+        if getattr(self, '_is_loading_employee_report', False):
+            return
+        self._is_loading_employee_report = True
+        self.employee_report_table.setRowCount(1)
+        loading_item = QTableWidgetItem("جاري التحميل ...")
+        loading_item.setForeground(Qt.GlobalColor.blue)
+        self.employee_report_table.setItem(0, 0, loading_item)
+        for col in range(1, self.employee_report_table.columnCount()):
+            self.employee_report_table.setItem(0, col, QTableWidgetItem(""))
+        # اجمع الفلاتر المطلوبة من الواجهة (مثال: الحالة، الدور)
+        params = {}
+        # مثال: params["status"] = self.status_combo.currentText() ...
+        self.employee_report_worker = EmployeeReportWorker(self.api_url, self.branch_id, self.token, params)
+        self.employee_report_worker.finished.connect(self.on_employee_report_loaded)
+        self.employee_report_worker.start()
+
+    def on_employee_report_loaded(self, response, error):
+        self._is_loading_employee_report = False
+        if error or response is None or response.status_code != 200:
+            self.employee_report_table.setRowCount(1)
+            error_item = QTableWidgetItem(f"فشل التحميل: {error or 'خطأ في الخادم'}")
+            error_item.setForeground(Qt.GlobalColor.red)
+            self.employee_report_table.setItem(0, 0, error_item)
+            for col in range(1, self.employee_report_table.columnCount()):
+                self.employee_report_table.setItem(0, col, QTableWidgetItem(""))
+            return
+        employees = response.json().get("employees", [])
+        self.employee_report_table.setRowCount(len(employees))
+        for row, employee in enumerate(employees):
+            username_item = QTableWidgetItem(employee.get("username", "غير معروف"))
+            self.employee_report_table.setItem(row, 0, username_item)
+            role = employee.get("role", "employee")
+            role_text = "مدير فرع" if role == "branch_manager" else "موظف"
+            role_item = QTableWidgetItem(role_text)
+            self.employee_report_table.setItem(row, 1, role_item)
+            is_active = employee.get("is_active", employee.get("active", False))
+            status_text = "نشط" if is_active else "غير نشط"
+            status_item = QTableWidgetItem(status_text)
+            color = QColor("#27ae60") if is_active else QColor("#e74c3c")
+            status_item.setForeground(color)
+            self.employee_report_table.setItem(row, 2, status_item)
+            created_at = employee.get("created_at", "غير معروف")
+            created_item = QTableWidgetItem(created_at)
+            self.employee_report_table.setItem(row, 3, created_item)
+            last_active = employee.get("last_login", employee.get("last_activity", "غير معروف"))
+            last_active_item = QTableWidgetItem(last_active)
+            self.employee_report_table.setItem(row, 4, last_active_item)
+        self.statusBar().showMessage("تم تحميل تقرير الموظفين بنجاح", 3000)                            
