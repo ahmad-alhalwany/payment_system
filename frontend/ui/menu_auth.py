@@ -1,9 +1,11 @@
-from PyQt6.QtWidgets import QMessageBox, QApplication, QMenuBar, QMenu
+from PyQt6.QtWidgets import QMessageBox, QApplication, QMenuBar, QMenu, QDialog, QVBoxLayout, QFormLayout, QDialogButtonBox, QLabel, QPushButton, QTextEdit
 from PyQt6.QtGui import QAction, QIcon, QFont
 from PyQt6.QtCore import Qt
 import sys
 import os
 import subprocess
+from ui.custom_widgets import ModernGroupBox
+from ui.password_reset import PasswordResetDialog
 
 class MenuAuthMixin:
     """Mixin class containing menu and authentication functionality"""
@@ -170,53 +172,201 @@ class MenuAuthMixin:
 
     def zoom_in(self):
         """Zoom in view."""
-        if hasattr(self, 'zoom_in'):
-            self.zoom_in()
+        if hasattr(self, 'apply_zoom'):
+            self.current_zoom = min(200, getattr(self, 'current_zoom', 100) + 10)
+            self.apply_zoom()
         else:
             QMessageBox.information(self, "تكبير", "تم تكبير العرض")
 
     def zoom_out(self):
         """Zoom out view."""
-        if hasattr(self, 'zoom_out'):
-            self.zoom_out()
+        if hasattr(self, 'apply_zoom'):
+            self.current_zoom = max(50, getattr(self, 'current_zoom', 100) - 10)
+            self.apply_zoom()
         else:
             QMessageBox.information(self, "تصغير", "تم تصغير العرض")
 
     def toggle_theme(self):
         """Toggle between light and dark theme."""
-        if hasattr(self, 'toggle_theme'):
-            self.toggle_theme()
+        if not hasattr(self, 'is_dark_theme'):
+            self.is_dark_theme = False
+        
+        self.is_dark_theme = not self.is_dark_theme
+        
+        if self.is_dark_theme:
+            self.setStyleSheet("""
+                QWidget {
+                    background-color: #2c3e50;
+                    color: #ecf0f1;
+                }
+                QTableWidget {
+                    background-color: #34495e;
+                    color: #ecf0f1;
+                    gridline-color: #2c3e50;
+                }
+                QHeaderView::section {
+                    background-color: #1a2530;
+                    color: #ecf0f1;
+                }
+                QPushButton {
+                    background-color: #3498db;
+                    color: white;
+                }
+                QPushButton:hover {
+                    background-color: #2980b9;
+                }
+            """)
         else:
-            QMessageBox.information(self, "تبديل المظهر", "تم تبديل المظهر")
+            self.setStyleSheet("""
+                QWidget {
+                    background-color: white;
+                    color: #2c3e50;
+                }
+                QTableWidget {
+                    background-color: white;
+                    color: #2c3e50;
+                    gridline-color: #ddd;
+                }
+                QHeaderView::section {
+                    background-color: #2c3e50;
+                    color: white;
+                }
+                QPushButton {
+                    background-color: #3498db;
+                    color: white;
+                }
+                QPushButton:hover {
+                    background-color: #2980b9;
+                }
+            """)
 
     def show_profile(self):
         """Show user profile."""
-        if hasattr(self, 'show_profile'):
-            self.show_profile()
-        else:
-            QMessageBox.information(self, "الملف الشخصي", "فتح الملف الشخصي")
+        profile_dialog = QDialog(self)
+        profile_dialog.setWindowTitle("الملف الشخصي")
+        profile_dialog.setMinimumWidth(400)
+        
+        layout = QVBoxLayout()
+        
+        # User info group
+        info_group = ModernGroupBox("معلومات المستخدم", "#3498db")
+        info_layout = QFormLayout()
+        
+        info_layout.addRow("اسم المستخدم:", QLabel("مدير النظام"))
+        info_layout.addRow("الدور:", QLabel("مدير"))
+        info_layout.addRow("الفرع:", QLabel("المركز الرئيسي"))
+        
+        info_group.setLayout(info_layout)
+        layout.addWidget(info_group)
+        
+        # Buttons
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Close
+        )
+        button_box.rejected.connect(profile_dialog.reject)
+        layout.addWidget(button_box)
+        
+        profile_dialog.setLayout(layout)
+        profile_dialog.exec()
 
     def change_password(self):
         """Change user password."""
-        if hasattr(self, 'change_password'):
-            self.change_password()
-        else:
-            QMessageBox.information(self, "تغيير كلمة المرور", "فتح نافذة تغيير كلمة المرور")
+        dialog = PasswordResetDialog(is_admin=True, token=self.token)
+        dialog.exec()
 
     def show_about(self):
         """Show about dialog."""
-        if hasattr(self, 'show_about'):
-            self.show_about()
-        else:
-            QMessageBox.information(self, "حول البرنامج", 
-                "نظام تحويل الأموال الداخلي\nالإصدار 1.0\n© 2024")
+        about_dialog = QDialog(self)
+        about_dialog.setWindowTitle("حول البرنامج")
+        about_dialog.setMinimumWidth(400)
+        
+        layout = QVBoxLayout()
+        
+        # Logo and title
+        title = QLabel("نظام تحويل الأموال الداخلي")
+        title.setFont(QFont("Arial", 16, QFont.Weight.Bold))
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title)
+        
+        # Version info
+        version = QLabel("الإصدار 1.0")
+        version.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(version)
+        
+        # Copyright
+        copyright = QLabel("© 2024 جميع الحقوق محفوظة")
+        copyright.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(copyright)
+        
+        # Close button
+        close_button = QPushButton("إغلاق")
+        close_button.clicked.connect(about_dialog.accept)
+        layout.addWidget(close_button)
+        
+        about_dialog.setLayout(layout)
+        about_dialog.exec()
 
     def show_help(self):
         """Show help documentation."""
-        if hasattr(self, 'show_help'):
-            self.show_help()
-        else:
-            QMessageBox.information(self, "دليل المستخدم", "فتح دليل المستخدم")
+        help_dialog = QDialog(self)
+        help_dialog.setWindowTitle("دليل المستخدم")
+        help_dialog.setMinimumWidth(600)
+        help_dialog.setMinimumHeight(400)
+        
+        layout = QVBoxLayout()
+        
+        # Help content
+        help_text = QTextEdit()
+        help_text.setReadOnly(True)
+        help_text.setHtml("""
+            <h2>دليل استخدام لوحة تحكم المدير</h2>
+            
+            <h3>إدارة الفروع</h3>
+            <ul>
+                <li>إضافة وتعديل وحذف الفروع</li>
+                <li>مراقبة أداء الفروع</li>
+                <li>إدارة الموظفين في كل فرع</li>
+            </ul>
+            
+            <h3>إدارة التحويلات</h3>
+            <ul>
+                <li>مراقبة جميع التحويلات في النظام</li>
+                <li>تصفية وبحث في التحويلات</li>
+                <li>تغيير حالة التحويلات</li>
+                <li>طباعة التقارير</li>
+            </ul>
+            
+            <h3>إدارة المستخدمين</h3>
+            <ul>
+                <li>إدارة حسابات المستخدمين</li>
+                <li>تعيين الصلاحيات</li>
+                <li>مراقبة نشاط المستخدمين</li>
+            </ul>
+            
+            <h3>التقارير والإحصائيات</h3>
+            <ul>
+                <li>عرض تقارير الأداء</li>
+                <li>تحليل البيانات</li>
+                <li>تصدير التقارير</li>
+            </ul>
+            
+            <h3>اختصارات لوحة المفاتيح</h3>
+            <ul>
+                <li>Ctrl+F: بحث</li>
+                <li>Ctrl+R: تحديث</li>
+                <li>Ctrl+P: طباعة</li>
+                <li>F1: المساعدة</li>
+            </ul>
+        """)
+        layout.addWidget(help_text)
+        
+        # Close button
+        close_button = QPushButton("إغلاق")
+        close_button.clicked.connect(help_dialog.accept)
+        layout.addWidget(close_button)
+        
+        help_dialog.setLayout(layout)
+        help_dialog.exec()
 
     def logout(self):
         """Logout and return to login screen."""
