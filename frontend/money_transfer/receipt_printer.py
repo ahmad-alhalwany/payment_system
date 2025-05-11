@@ -1,34 +1,80 @@
 from PyQt6.QtWidgets import (
-    QVBoxLayout, QMessageBox, QDialog, QTextEdit, QPushButton, QHBoxLayout
+    QVBoxLayout, QMessageBox, QDialog, QTextEdit, QPushButton, QHBoxLayout,
+    QProgressBar
 )
 from PyQt6.QtPrintSupport import QPrinter, QPrintDialog
 from PyQt6.QtGui import QTextDocument
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
 from ui.arabic_amount import number_to_arabic_words
 from ui.custom_widgets import ModernButton
 from datetime import datetime
+import threading
+import time
+
+class PrintWorker(QThread):
+    """Worker thread for printing operations"""
+    finished = pyqtSignal()
+    error = pyqtSignal(str)
+    progress = pyqtSignal(int)
+    
+    def __init__(self, customer_doc, system_doc, printer):
+        super().__init__()
+        self.customer_doc = customer_doc
+        self.system_doc = system_doc
+        self.printer = printer
+        
+    def run(self):
+        try:
+            # Print customer copy
+            self.progress.emit(25)
+            self.customer_doc.print_(self.printer)
+            
+            # Print system copy
+            self.progress.emit(75)
+            self.system_doc.print_(self.printer)
+            
+            self.progress.emit(100)
+            self.finished.emit()
+        except Exception as e:
+            self.error.emit(str(e))
 
 class ReceiptPrinter:
     
     def __init__(self, parent=None):
         self.parent = parent
         self._receipt_cache = {}  # Cache for generated receipts
+        self._cache_lock = threading.Lock()  # Thread-safe cache access
         self._printer_settings = {
             'page_size': 'A4',
             'orientation': 'Portrait',
             'margins': (10, 10, 10, 10)  # Left, Top, Right, Bottom in mm
         }
+        self._cache_cleanup_timer = QTimer()
+        self._cache_cleanup_timer.timeout.connect(self._cleanup_cache)
+        self._cache_cleanup_timer.start(300000)  # Cleanup every 5 minutes
+
+    def _cleanup_cache(self):
+        """Clean up expired cache entries"""
+        with self._cache_lock:
+            current_time = datetime.now()
+            expired_keys = [
+                key for key, value in self._receipt_cache.items()
+                if (current_time - value['timestamp']).total_seconds() > 300
+            ]
+            for key in expired_keys:
+                del self._receipt_cache[key]
 
     def print_receipt(self, transaction_data):
         """Print receipt for the selected transaction with improved performance."""
         try:
             # Check cache first
             cache_key = str(transaction_data.get('id', ''))
-            if cache_key in self._receipt_cache:
-                cached_receipt = self._receipt_cache[cache_key]
-                if self._is_cache_valid(cached_receipt, transaction_data):
-                    self._print_cached_receipt(cached_receipt)
-                    return
+            with self._cache_lock:
+                if cache_key in self._receipt_cache:
+                    cached_receipt = self._receipt_cache[cache_key]
+                    if self._is_cache_valid(cached_receipt, transaction_data):
+                        self._print_cached_receipt(cached_receipt)
+                        return
 
             # Generate new receipt
             amount = transaction_data.get('amount', 0) or 0
@@ -44,7 +90,9 @@ class ReceiptPrinter:
                 'timestamp': datetime.now(),
                 'transaction_id': cache_key
             }
-            self._receipt_cache[cache_key] = receipt_data
+            
+            with self._cache_lock:
+                self._receipt_cache[cache_key] = receipt_data
             
             # Show print dialog
             print_dialog = self._create_print_dialog(transaction_data, formatted_id, amount_in_arabic)
@@ -60,7 +108,7 @@ class ReceiptPrinter:
         return cache_age.total_seconds() < 300
 
     def _print_cached_receipt(self, cached_receipt):
-        """Print from cached receipt data."""
+        """Print from cached receipt data with progress bar."""
         dialog = QDialog(self.parent)
         dialog.setWindowTitle("طباعة التحويل")
         dialog.setFixedSize(1000, 600)
@@ -82,16 +130,22 @@ class ReceiptPrinter:
         
         layout.addLayout(content_layout)
         
+        # Progress bar
+        progress_bar = QProgressBar()
+        progress_bar.setRange(0, 100)
+        progress_bar.setValue(0)
+        layout.addWidget(progress_bar)
+        
         # Print button with improved styling
         print_btn = ModernButton("طباعة", color="#3498db")
-        print_btn.clicked.connect(lambda: self.send_to_printer(customer_copy, system_copy))
+        print_btn.clicked.connect(lambda: self.send_to_printer(customer_copy, system_copy, progress_bar))
         layout.addWidget(print_btn)
         
         dialog.setLayout(layout)
         dialog.exec()
 
-    def send_to_printer(self, customer_copy, system_copy):
-        """Send to printer with improved settings."""
+    def send_to_printer(self, customer_copy, system_copy, progress_bar=None):
+        """Send to printer with improved settings and progress tracking."""
         try:
             printer = QPrinter()
             printer.setPageSize(QPrinter.PageSize.A4)
@@ -108,17 +162,28 @@ class ReceiptPrinter:
             
             print_dialog = QPrintDialog(printer, self.parent)
             if print_dialog.exec() == QDialog.DialogCode.Accepted:
-                # Print customer copy
+                # Create documents
                 customer_doc = QTextDocument()
                 customer_doc.setHtml(customer_copy.toHtml())
-                customer_doc.print_(printer)
                 
-                # Print system copy
                 system_doc = QTextDocument()
                 system_doc.setHtml(system_copy.toHtml())
-                system_doc.print_(printer)
                 
-                QMessageBox.information(self.parent, "نجاح", "تمت الطباعة بنجاح")
+                # Create and start worker
+                self.print_worker = PrintWorker(customer_doc, system_doc, printer)
+                
+                if progress_bar:
+                    self.print_worker.progress.connect(progress_bar.setValue)
+                
+                self.print_worker.finished.connect(lambda: QMessageBox.information(
+                    self.parent, "نجاح", "تمت الطباعة بنجاح"
+                ))
+                self.print_worker.error.connect(lambda msg: QMessageBox.warning(
+                    self.parent, "خطأ", f"حدث خطأ أثناء الطباعة: {msg}"
+                ))
+                
+                self.print_worker.start()
+                
         except Exception as e:
             QMessageBox.warning(self.parent, "خطأ", f"حدث خطأ أثناء الطباعة: {str(e)}")
 
