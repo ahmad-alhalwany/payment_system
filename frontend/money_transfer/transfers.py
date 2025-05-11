@@ -12,6 +12,7 @@ import httpx
 from fastapi import HTTPException
 import threading
 import time
+from PyQt6.QtWidgets import QApplication
 
 class DataCache:
     """بسيط لتخزين البيانات التي يتم جلبها كثيراً (الفروع، العملات)"""
@@ -516,21 +517,28 @@ class TransferCore:
             self.submit_transfer()
 
     def clear_form(self):
-        """Clear the new transfer form بسرعة بدون أي عمليات ثقيلة أو إشارات إضافية."""
+        """Clear the new transfer form بسرعة مع مؤشر تحميل أثناء التفريغ."""
+        # إظهار مؤشر تحميل
+        if not hasattr(self, '_clear_progress'):
+            self._clear_progress = QProgressBar()
+            self._clear_progress.setRange(0, 0)
+            self._clear_progress.setTextVisible(True)
+            self._clear_progress.setFormat("جاري تفريغ الحقول...")
+            if hasattr(self, 'new_transfer_tab'):
+                self.new_transfer_tab.layout().addWidget(self._clear_progress)
+        self._clear_progress.show()
+        QApplication.processEvents()  # تحديث الواجهة فورًا
         if hasattr(self, 'new_transfer_tab'):
             self.new_transfer_tab.setUpdatesEnabled(False)
         try:
-            # Clear sender information
             self.sender_name_input.clear()
             self.sender_mobile_input.clear()
             self.sender_id_input.clear()
             self.sender_address_input.clear()
             self.sender_location_input.clear()
-            # Clear receiver information
             self.receiver_name_input.clear()
             self.receiver_mobile_input.clear()
             self.receiver_governorate_input.setCurrentIndex(0)
-            # Clear transfer information
             self.amount_input.setValue(0)
             self.benefited_input.setValue(0)
             self.currency_input.setCurrentIndex(0)
@@ -539,6 +547,8 @@ class TransferCore:
         finally:
             if hasattr(self, 'new_transfer_tab'):
                 self.new_transfer_tab.setUpdatesEnabled(True)
+            self._clear_progress.hide()
+            QApplication.processEvents()
 
     def _reload_after_success(self):
         self.load_transactions()
