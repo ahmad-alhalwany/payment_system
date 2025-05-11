@@ -12,34 +12,40 @@ SECRET_KEY = "929b15e43fd8f1cf4df79d86eb93ca426ab58ae53386c7a91ac4adb45832773b"
 ALGORITHM = "HS256"
 
 class LoginWorker(QThread):
-    """Worker thread for handling login operations"""
+    """Worker thread for handling login operations with improved error handling and progress tracking"""
     finished = pyqtSignal(dict)
     error = pyqtSignal(str)
     progress = pyqtSignal(int)
+    status = pyqtSignal(str)  # New signal for status updates
 
     def __init__(self, username, password):
         super().__init__()
         self.username = username
         self.password = password
+        self.max_retries = 3
+        self.retry_delay = 1  # seconds
 
     def run(self):
         try:
+            self.status.emit("جاري التحقق من البيانات...")
             self.progress.emit(10)
+            
             api_url = os.environ["API_URL"]
+            self.status.emit("جاري الاتصال بالخادم...")
             self.progress.emit(30)
             
-            # Add retry mechanism
-            max_retries = 3
-            for attempt in range(max_retries):
+            for attempt in range(self.max_retries):
                 try:
+                    self.status.emit(f"محاولة الاتصال {attempt + 1} من {self.max_retries}...")
                     response = requests.post(
                         f"{api_url}/login/",
                         json={"username": self.username, "password": self.password},
-                        timeout=5  # Add timeout
+                        timeout=5
                     )
                     self.progress.emit(70)
                     
                     if response.status_code == 200:
+                        self.status.emit("تم تسجيل الدخول بنجاح!")
                         self.progress.emit(100)
                         self.finished.emit(response.json())
                         return
@@ -47,15 +53,17 @@ class LoginWorker(QThread):
                         self.error.emit("اسم المستخدم أو كلمة المرور غير صحيحة!")
                         return
                     else:
-                        if attempt == max_retries - 1:
+                        if attempt == self.max_retries - 1:
                             self.error.emit(f"خطأ في تسجيل الدخول: {response.status_code}")
                             return
-                        time.sleep(1)  # Wait before retry
+                        self.status.emit(f"فشل الاتصال، جاري إعادة المحاولة...")
+                        time.sleep(self.retry_delay)
                 except requests.exceptions.RequestException as e:
-                    if attempt == max_retries - 1:
+                    if attempt == self.max_retries - 1:
                         self.error.emit(f"تعذر الاتصال بالخادم: {str(e)}")
                         return
-                    time.sleep(1)  # Wait before retry
+                    self.status.emit(f"فشل الاتصال، جاري إعادة المحاولة...")
+                    time.sleep(self.retry_delay)
         except Exception as e:
             self.error.emit(f"حدث خطأ غير متوقع: {str(e)}")
 
@@ -64,60 +72,24 @@ class LoginWindow(QDialog):
         super().__init__()
         
         self.setWindowTitle("تسجيل الدخول")
-        self.setGeometry(200, 200, 450, 500)  # Increased window size
-        self.setStyleSheet("""
-            QDialog {
-                background-color: #ffffff;
-                font-family: Arial;
-            }
-            QLabel {
-                color: #2c3e50;
-                font-size: 14px;
-                margin-bottom: 5px;
-            }
-            QPushButton {
-                background-color: #2c3e50;
-                color: white;
-                border-radius: 5px;
-                padding: 10px;
-                font-weight: bold;
-                font-size: 14px;
-            }
-            QPushButton:hover {
-                background-color: #34495e;
-            }
-            QLineEdit {
-                border: 2px solid #e0e0e0;
-                border-radius: 5px;
-                padding: 10px;
-                background-color: white;
-                font-size: 14px;
-                margin-bottom: 10px;
-            }
-            QLineEdit:focus {
-                border: 2px solid #3498db;
-            }
-            QProgressBar {
-                border: 1px solid #ccc;
-                border-radius: 5px;
-                text-align: center;
-                background-color: white;
-                height: 10px;
-            }
-            QProgressBar::chunk {
-                background-color: #27ae60;
-                border-radius: 5px;
-            }
-            QFrame {
-                background-color: #f8f9fa;
-                border-radius: 10px;
-                padding: 20px;
-            }
-        """)
+        self.setGeometry(200, 200, 450, 500)
+        self.setup_ui()
+        self.setup_styles()
+        
+        # Initialize other properties
+        self.user_role = None
+        self.branch_id = None
+        self.user_id = None
+        self.token = None
+        self.username = None
+        
+        self.check_initialization()
 
+    def setup_ui(self):
+        """Set up the UI components with improved loading indicators"""
         self.layout = QVBoxLayout()
-        self.layout.setSpacing(15)  # Add spacing between widgets
-        self.layout.setContentsMargins(30, 30, 30, 30)  # Add margins
+        self.layout.setSpacing(15)
+        self.layout.setContentsMargins(30, 30, 30, 30)
 
         # Create a frame for the content
         content_frame = QFrame()
@@ -175,7 +147,13 @@ class LoginWindow(QDialog):
         
         content_layout.addLayout(password_layout)
 
-        # Progress bar
+        # Status label for detailed progress
+        self.status_label = QLabel("")
+        self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.status_label.setStyleSheet("color: #666; font-size: 12px;")
+        content_layout.addWidget(self.status_label)
+
+        # Progress bar with improved styling
         self.progress_bar = QProgressBar(self)
         self.progress_bar.setVisible(False)
         self.progress_bar.setStyleSheet("""
@@ -212,6 +190,9 @@ class LoginWindow(QDialog):
             QPushButton:pressed {
                 background-color: #219a52;
             }
+            QPushButton:disabled {
+                background-color: #95a5a6;
+            }
         """)
         content_layout.addWidget(self.login_button)
 
@@ -239,27 +220,33 @@ class LoginWindow(QDialog):
         self.layout.addWidget(content_frame)
         self.setLayout(self.layout)
 
-        # Initialize other properties
-        self.user_role = None
-        self.branch_id = None
-        self.user_id = None
-        self.token = None
-        self.username = None
-        
-        self.check_initialization()
-
-    def check_initialization(self):
-        try:
-            api_url = os.environ["API_URL"]
-            response = requests.get(f"{api_url}/check-initialization/", timeout=5)
-            if response.status_code == 200 and not response.json().get("is_initialized"):
-                dialog = SetupDialog(self)
-                dialog.exec()
-        except Exception as e:
-            QMessageBox.warning(self, "خطأ", f"تعذر التحقق من تهيئة النظام: {str(e)}")
+    def setup_styles(self):
+        """Set up the window styles"""
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #ffffff;
+                font-family: Arial;
+            }
+            QLabel {
+                color: #2c3e50;
+                font-size: 14px;
+                margin-bottom: 5px;
+            }
+            QLineEdit {
+                border: 2px solid #e0e0e0;
+                border-radius: 5px;
+                padding: 10px;
+                background-color: white;
+                font-size: 14px;
+                margin-bottom: 10px;
+            }
+            QLineEdit:focus {
+                border: 2px solid #3498db;
+            }
+        """)
 
     def check_login(self):
-        """Check login credentials via the backend."""
+        """Check login credentials with improved error handling and UI feedback"""
         username = self.username_input.text()
         password = self.password_input.text()
 
@@ -271,12 +258,14 @@ class LoginWindow(QDialog):
         self.set_inputs_enabled(False)
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
+        self.status_label.setText("جاري التحقق من البيانات...")
 
         # Start login worker
         self.worker = LoginWorker(username, password)
         self.worker.finished.connect(self.handle_login_success)
         self.worker.error.connect(self.handle_login_error)
         self.worker.progress.connect(self.update_progress)
+        self.worker.status.connect(self.update_status)
         self.worker.start()
 
     def set_inputs_enabled(self, enabled):
@@ -284,13 +273,18 @@ class LoginWindow(QDialog):
         self.username_input.setEnabled(enabled)
         self.password_input.setEnabled(enabled)
         self.login_button.setEnabled(enabled)
+        self.toggle_password_button.setEnabled(enabled)
 
     def update_progress(self, value):
         """Update progress bar value"""
         self.progress_bar.setValue(value)
 
+    def update_status(self, status):
+        """Update status label with current operation status"""
+        self.status_label.setText(status)
+
     def handle_login_success(self, data):
-        """Handle successful login"""
+        """Handle successful login with improved feedback"""
         self.user_role = data.get("role")
         self.branch_id = data.get("branch_id")
         self.user_id = data.get("user_id")
@@ -305,9 +299,10 @@ class LoginWindow(QDialog):
         self.accept()
 
     def handle_login_error(self, error_message):
-        """Handle login error"""
+        """Handle login error with improved feedback"""
         self.set_inputs_enabled(True)
         self.progress_bar.setVisible(False)
+        self.status_label.setText("")
         QMessageBox.warning(self, "خطأ في تسجيل الدخول", error_message)
 
     def create_local_token(self, username, role, branch_id, user_id=1):
@@ -336,12 +331,62 @@ class LoginWindow(QDialog):
             self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
             self.toggle_password_button.setText("👁️")
 
+    def check_initialization(self):
+        try:
+            api_url = os.environ["API_URL"]
+            response = requests.get(f"{api_url}/check-initialization/", timeout=5)
+            if response.status_code == 200 and not response.json().get("is_initialized"):
+                dialog = SetupDialog(self)
+                dialog.exec()
+        except Exception as e:
+            QMessageBox.warning(self, "خطأ", f"تعذر التحقق من تهيئة النظام: {str(e)}")
+
+class CreateUserWorker(QThread):
+    finished = pyqtSignal()
+    error = pyqtSignal(str)
+    progress = pyqtSignal(int)
+    status = pyqtSignal(str)
+
+    def __init__(self, username, password, role, branch_id, token, api_url):
+        super().__init__()
+        self.username = username
+        self.password = password
+        self.role = role
+        self.branch_id = branch_id
+        self.token = token
+        self.api_url = api_url
+
+    def run(self):
+        try:
+            self.status.emit("جاري إرسال البيانات...")
+            self.progress.emit(30)
+            headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
+            response = requests.post(
+                f"{self.api_url}/register/",
+                json={
+                    "username": self.username,
+                    "password": self.password,
+                    "role": self.role,
+                    "branch_id": self.branch_id
+                },
+                headers=headers
+            )
+            self.progress.emit(80)
+            if response.status_code == 200:
+                self.status.emit("تم إنشاء المستخدم بنجاح!")
+                self.progress.emit(100)
+                self.finished.emit()
+            else:
+                self.error.emit(f"فشل في إنشاء المستخدم: الخطأ: {response.status_code} - {response.text}")
+        except Exception as e:
+            self.error.emit(f"تعذر الاتصال بالخادم: {str(e)}")
+
 class CreateUserDialog(QDialog):
     """Dialog to create a new user."""
     def __init__(self, user_role, branch_id, token, parent=None):
         super().__init__(parent)
         self.setWindowTitle("إنشاء مستخدم جديد")
-        self.setGeometry(250, 250, 400, 350)
+        self.setGeometry(250, 250, 400, 400)
         self.setStyleSheet("""
             QWidget {
                 background-color: #f5f5f5;
@@ -399,7 +444,7 @@ class CreateUserDialog(QDialog):
         if self.user_role == "director":
             self.role_input.addItems(["مدير فرع", "موظف"])
         else:
-            self.role_input.addItems(["موظف"])  # Branch managers can only create employees
+            self.role_input.addItems(["موظف"])
         layout.addWidget(self.role_label)
         layout.addWidget(self.role_input)
 
@@ -409,6 +454,29 @@ class CreateUserDialog(QDialog):
             layout.addWidget(self.branch_label)
             layout.addWidget(self.branch_input)
             self.load_branches()
+
+        # Status label and progress bar
+        self.status_label = QLabel("")
+        self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.status_label.setStyleSheet("color: #666; font-size: 12px;")
+        layout.addWidget(self.status_label)
+
+        self.progress_bar = QProgressBar(self)
+        self.progress_bar.setVisible(False)
+        self.progress_bar.setStyleSheet("""
+            QProgressBar {
+                border: 2px solid #e0e0e0;
+                border-radius: 5px;
+                text-align: center;
+                background-color: white;
+                height: 10px;
+            }
+            QProgressBar::chunk {
+                background-color: #27ae60;
+                border-radius: 5px;
+            }
+        """)
+        layout.addWidget(self.progress_bar)
 
         self.create_button = QPushButton("إنشاء مستخدم")
         self.create_button.clicked.connect(self.create_user)
@@ -436,11 +504,9 @@ class CreateUserDialog(QDialog):
             headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
             api_url = os.environ["API_URL"]
             response = requests.get(f"{api_url}/branches/", headers=headers)
-            
             if response.status_code == 200:
                 branches = response.json()
                 self.branch_input.clear()
-                
                 for branch in branches:
                     self.branch_input.addItem(branch["name"], branch["id"])
             else:
@@ -448,8 +514,16 @@ class CreateUserDialog(QDialog):
         except Exception as e:
             QMessageBox.warning(self, "خطأ", f"تعذر الاتصال بالخادم: {str(e)}")
 
+    def set_inputs_enabled(self, enabled):
+        self.username_input.setEnabled(enabled)
+        self.password_input.setEnabled(enabled)
+        self.role_input.setEnabled(enabled)
+        if hasattr(self, 'branch_input'):
+            self.branch_input.setEnabled(enabled)
+        self.create_button.setEnabled(enabled)
+
     def create_user(self):
-        """Create a new user using the backend API."""
+        """Create a new user using the backend API asynchronously."""
         username = self.username_input.text()
         password = self.password_input.text()
         role = "branch_manager" if self.role_input.currentText() == "مدير فرع" else "employee"
@@ -458,34 +532,38 @@ class CreateUserDialog(QDialog):
             QMessageBox.warning(self, "خطأ", "يرجى ملء جميع الحقول!")
             return
 
-        try:
-            headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
-            
-            # Determine branch_id based on user role
-            selected_branch_id = None
-            if self.user_role == "director":
-                selected_branch_id = self.branch_input.currentData()
-            else:
-                selected_branch_id = self.branch_id
-            api_url = os.environ["API_URL"]
-            response = requests.post(
-                f"{api_url}/register/",
-                json={
-                    "username": username,
-                    "password": password,
-                    "role": role,
-                    "branch_id": selected_branch_id
-                },
-                headers=headers
-            )
+        self.set_inputs_enabled(False)
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+        self.status_label.setText("جاري إرسال البيانات...")
 
-            if response.status_code == 200:
-                QMessageBox.information(self, "نجاح", "تم إنشاء المستخدم بنجاح!")
-                self.accept()
-            else:
-                QMessageBox.warning(self, "خطأ", f"فشل في إنشاء المستخدم: الخطأ: {response.status_code} - {response.text}")
-        except Exception as e:
-            QMessageBox.warning(self, "خطأ", f"تعذر الاتصال بالخادم: {str(e)}")
+        # Determine branch_id based on user role
+        selected_branch_id = None
+        if self.user_role == "director":
+            selected_branch_id = self.branch_input.currentData()
+        else:
+            selected_branch_id = self.branch_id
+        api_url = os.environ["API_URL"]
+
+        self.worker = CreateUserWorker(username, password, role, selected_branch_id, self.token, api_url)
+        self.worker.finished.connect(self.handle_create_success)
+        self.worker.error.connect(self.handle_create_error)
+        self.worker.progress.connect(self.progress_bar.setValue)
+        self.worker.status.connect(self.status_label.setText)
+        self.worker.start()
+
+    def handle_create_success(self):
+        self.set_inputs_enabled(True)
+        self.progress_bar.setVisible(False)
+        self.status_label.setText("")
+        QMessageBox.information(self, "نجاح", "تم إنشاء المستخدم بنجاح!")
+        self.accept()
+
+    def handle_create_error(self, error_message):
+        self.set_inputs_enabled(True)
+        self.progress_bar.setVisible(False)
+        self.status_label.setText("")
+        QMessageBox.warning(self, "خطأ", error_message)
 
 class SetupDialog(QDialog):
     """Dialog for initial system setup."""
