@@ -3,8 +3,8 @@ from PyQt6.QtWidgets import (
     QProgressBar
 )
 from PyQt6.QtPrintSupport import QPrinter, QPrintDialog
-from PyQt6.QtGui import QTextDocument
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
+from PyQt6.QtGui import QTextDocument, QPageSize, QPageLayout
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QMarginsF
 from ui.arabic_amount import number_to_arabic_words
 from ui.custom_widgets import ModernButton
 from datetime import datetime
@@ -148,42 +148,29 @@ class ReceiptPrinter:
         """Send to printer with improved settings and progress tracking."""
         try:
             printer = QPrinter()
-            printer.setPageSize(QPrinter.PageSize.A4)
-            printer.setOrientation(QPrinter.Orientation.Portrait)
-            
-            # Set margins
-            printer.setPageMargins(
-                self._printer_settings['margins'][0],
-                self._printer_settings['margins'][1],
-                self._printer_settings['margins'][2],
-                self._printer_settings['margins'][3],
-                QPrinter.Unit.Millimeter
-            )
-            
+            printer.setPageLayout(QPageLayout(
+                QPageSize(QPageSize.PageSizeId.A4),
+                QPageLayout.Orientation.Portrait,
+                QMarginsF(10, 10, 10, 10)
+            ))
             print_dialog = QPrintDialog(printer, self.parent)
             if print_dialog.exec() == QDialog.DialogCode.Accepted:
                 # Create documents
                 customer_doc = QTextDocument()
                 customer_doc.setHtml(customer_copy.toHtml())
-                
                 system_doc = QTextDocument()
                 system_doc.setHtml(system_copy.toHtml())
-                
                 # Create and start worker
                 self.print_worker = PrintWorker(customer_doc, system_doc, printer)
-                
                 if progress_bar:
                     self.print_worker.progress.connect(progress_bar.setValue)
-                
                 self.print_worker.finished.connect(lambda: QMessageBox.information(
                     self.parent, "نجاح", "تمت الطباعة بنجاح"
                 ))
                 self.print_worker.error.connect(lambda msg: QMessageBox.warning(
                     self.parent, "خطأ", f"حدث خطأ أثناء الطباعة: {msg}"
                 ))
-                
                 self.print_worker.start()
-                
         except Exception as e:
             QMessageBox.warning(self.parent, "خطأ", f"حدث خطأ أثناء الطباعة: {str(e)}")
 
@@ -501,22 +488,24 @@ class ReceiptPrinter:
                 return
 
             # Collect transaction data
-            amount_str = self.received_table.item(row, 4).text().replace(',', '')  # Remove commas
+            def safe_item_text(item):
+                return item.text() if item else ""
+            amount_str = safe_item_text(self.received_table.item(row, 4)).replace(',', '')
             
             transaction_data = {
-                'id': self.received_table.item(row, 0).text(),
-                'date': self.received_table.item(row, 1).text(),
-                'sender': self.received_table.item(row, 2).text(),
-                'receiver': self.received_table.item(row, 3).text(),
-                'amount': float(amount_str),  # Convert clean string to float
-                'currency': self.received_table.item(row, 5).text(),
-                'receiver_governorate': self.received_table.item(row, 6).text(),
+                'id': safe_item_text(self.received_table.item(row, 0)),
+                'date': safe_item_text(self.received_table.item(row, 1)),
+                'sender': safe_item_text(self.received_table.item(row, 2)),
+                'receiver': safe_item_text(self.received_table.item(row, 3)),
+                'amount': float(amount_str) if amount_str else 0.0,
+                'currency': safe_item_text(self.received_table.item(row, 5)),
+                'receiver_governorate': safe_item_text(self.received_table.item(row, 6)),
                 'status': status,
-                'employee_name': self.received_table.item(row, 9).text(),
-                'sending_branch_name': self.received_table.item(row, 10).text(),
-                'destination_branch_name': self.received_table.item(row, 11).text(),
-                'branch_governorate': self.received_table.item(row, 12).text(),
-                'received_status': self.received_table.item(row, 13).text(),
+                'employee_name': safe_item_text(self.received_table.item(row, 9)),
+                'sending_branch_name': safe_item_text(self.received_table.item(row, 10)),
+                'destination_branch_name': safe_item_text(self.received_table.item(row, 11)),
+                'branch_governorate': safe_item_text(self.received_table.item(row, 12)),
+                'received_status': safe_item_text(self.received_table.item(row, 13)),
                 'received_by': self.full_name,
                 'received_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 'type': 'received'
