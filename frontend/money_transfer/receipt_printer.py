@@ -12,27 +12,119 @@ class ReceiptPrinter:
     
     def __init__(self, parent=None):
         self.parent = parent
+        self._receipt_cache = {}  # Cache for generated receipts
+        self._printer_settings = {
+            'page_size': 'A4',
+            'orientation': 'Portrait',
+            'margins': (10, 10, 10, 10)  # Left, Top, Right, Bottom in mm
+        }
 
     def print_receipt(self, transaction_data):
-        """Print receipt for the selected transaction."""
+        """Print receipt for the selected transaction with improved performance."""
         try:
-            # Safely get values with defaults to prevent None formatting issues
-            amount = transaction_data.get('amount', 0)
-            if amount is None:
-                amount = 0
-            
-            currency = transaction_data.get('currency', 'ليرة سورية')
-            if currency is None:
-                currency = 'ليرة سورية'
+            # Check cache first
+            cache_key = str(transaction_data.get('id', ''))
+            if cache_key in self._receipt_cache:
+                cached_receipt = self._receipt_cache[cache_key]
+                if self._is_cache_valid(cached_receipt, transaction_data):
+                    self._print_cached_receipt(cached_receipt)
+                    return
+
+            # Generate new receipt
+            amount = transaction_data.get('amount', 0) or 0
+            currency = transaction_data.get('currency', 'ليرة سورية') or 'ليرة سورية'
             
             formatted_id = self._format_transaction_id(transaction_data.get('id', ''))
             amount_in_arabic = number_to_arabic_words(str(amount), currency)
             
+            # Generate and cache receipt
+            receipt_data = {
+                'customer_copy': self._generate_customer_copy_html(transaction_data, formatted_id, amount_in_arabic),
+                'system_copy': self._generate_system_copy_html(transaction_data, formatted_id, amount_in_arabic),
+                'timestamp': datetime.now(),
+                'transaction_id': cache_key
+            }
+            self._receipt_cache[cache_key] = receipt_data
+            
+            # Show print dialog
             print_dialog = self._create_print_dialog(transaction_data, formatted_id, amount_in_arabic)
             print_dialog.exec()
             
         except Exception as e:
             QMessageBox.warning(self.parent, "خطأ", f"حدث خطأ أثناء طباعة الإيصال: {str(e)}")
+
+    def _is_cache_valid(self, cached_receipt, current_data):
+        """Check if cached receipt is still valid."""
+        # Cache is valid for 5 minutes
+        cache_age = datetime.now() - cached_receipt['timestamp']
+        return cache_age.total_seconds() < 300
+
+    def _print_cached_receipt(self, cached_receipt):
+        """Print from cached receipt data."""
+        dialog = QDialog(self.parent)
+        dialog.setWindowTitle("طباعة التحويل")
+        dialog.setFixedSize(1000, 600)
+        
+        layout = QVBoxLayout()
+        content_layout = QHBoxLayout()
+        
+        # Customer copy
+        customer_copy = QTextEdit()
+        customer_copy.setReadOnly(True)
+        customer_copy.setHtml(cached_receipt['customer_copy'])
+        content_layout.addWidget(customer_copy)
+        
+        # System copy
+        system_copy = QTextEdit()
+        system_copy.setReadOnly(True)
+        system_copy.setHtml(cached_receipt['system_copy'])
+        content_layout.addWidget(system_copy)
+        
+        layout.addLayout(content_layout)
+        
+        # Print button with improved styling
+        print_btn = ModernButton("طباعة", color="#3498db")
+        print_btn.clicked.connect(lambda: self.send_to_printer(customer_copy, system_copy))
+        layout.addWidget(print_btn)
+        
+        dialog.setLayout(layout)
+        dialog.exec()
+
+    def send_to_printer(self, customer_copy, system_copy):
+        """Send to printer with improved settings."""
+        try:
+            printer = QPrinter()
+            printer.setPageSize(QPrinter.PageSize.A4)
+            printer.setOrientation(QPrinter.Orientation.Portrait)
+            
+            # Set margins
+            printer.setPageMargins(
+                self._printer_settings['margins'][0],
+                self._printer_settings['margins'][1],
+                self._printer_settings['margins'][2],
+                self._printer_settings['margins'][3],
+                QPrinter.Unit.Millimeter
+            )
+            
+            print_dialog = QPrintDialog(printer, self.parent)
+            if print_dialog.exec() == QDialog.DialogCode.Accepted:
+                # Print customer copy
+                customer_doc = QTextDocument()
+                customer_doc.setHtml(customer_copy.toHtml())
+                customer_doc.print_(printer)
+                
+                # Print system copy
+                system_doc = QTextDocument()
+                system_doc.setHtml(system_copy.toHtml())
+                system_doc.print_(printer)
+                
+                QMessageBox.information(self.parent, "نجاح", "تمت الطباعة بنجاح")
+        except Exception as e:
+            QMessageBox.warning(self.parent, "خطأ", f"حدث خطأ أثناء الطباعة: {str(e)}")
+
+    def clear_cache(self):
+        """Clear the receipt cache."""
+        self._receipt_cache.clear()
 
     def _format_transaction_id(self, transaction_id):
         """Format transaction ID with dashes"""
@@ -323,28 +415,6 @@ class ReceiptPrinter:
         """)
         print_btn.clicked.connect(lambda: self.send_to_printer(customer_copy, system_copy))
         return print_btn
-
-    def send_to_printer(self, customer_copy, system_copy):
-        """Handle physical printing"""
-        printer = QPrinter()
-        print_dialog = QPrintDialog(printer, self)
-        
-        if print_dialog.exec() == QDialog.DialogCode.Accepted:
-            # Create a combined document for printing
-            combined_doc = QTextDocument()
-            combined_html = f"""
-            <div style='display: flex; justify-content: space-between;'>
-                <div style='width: 48%;'>
-                    {customer_copy.toHtml()}
-                </div>
-                <div style='width: 48%;'>
-                    {system_copy.toHtml()}
-                </div>
-            </div>
-            """
-            combined_doc.setHtml(combined_html)
-            combined_doc.print(printer)
-            combined_doc.print(printer)
 
     def print_received_transaction(self, item=None):
         """Print received transaction receipt."""

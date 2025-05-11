@@ -1,19 +1,22 @@
 from PyQt6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QLabel, 
     QPushButton, QDialog, QFormLayout, QGroupBox,
-    QTextEdit,
+    QTextEdit, QMessageBox
 )
 from PyQt6.QtPrintSupport import QPrinter, QPrintDialog
+from PyQt6.QtGui import QTextDocument
+from datetime import datetime
 
 class TransactionDetailsDialog(QDialog):
-    """Dialog for displaying transaction details."""
+    """Dialog for displaying transaction details with improved performance."""
     
     def __init__(self, transaction, parent=None):
         super().__init__(parent)
         self.transaction = transaction
+        self._details_cache = {}  # Cache for formatted details
         
         self.setWindowTitle("تفاصيل التحويل")
-        self.setGeometry(300, 300, 500, 400)
+        self.setGeometry(300, 300, 600, 500)  # Increased size for better readability
         self.setStyleSheet("""
             QDialog {
                 background-color: #f5f5f5;
@@ -21,170 +24,63 @@ class TransactionDetailsDialog(QDialog):
             }
             QLabel {
                 color: #333;
+                font-size: 12px;
             }
             QGroupBox {
                 font-weight: bold;
-                border: 1px solid #3498db;
-                border-radius: 5px;
-                margin-top: 1em;
-                padding-top: 10px;
+                border: 2px solid #3498db;
+                border-radius: 8px;
+                margin-top: 1.5em;
+                padding: 15px;
+                background-color: white;
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 5px 0 5px;
+                left: 15px;
+                padding: 0 10px;
                 color: #3498db;
+                font-size: 14px;
+            }
+            QPushButton {
+                padding: 8px 16px;
+                border-radius: 4px;
+                font-weight: bold;
+                min-width: 100px;
             }
         """)
         
         self.setup_ui()
     
     def setup_ui(self):
-        """Set up the UI components."""
+        """Set up the UI components with improved layout."""
         layout = QVBoxLayout()
+        layout.setSpacing(15)  # Increased spacing between elements
         
-        # Transaction info group
-        transaction_group = QGroupBox("معلومات التحويل")
-        transaction_layout = QFormLayout()
-        
-        # Transaction ID
-        transaction_id_label = QLabel("رقم التحويل:")
-        transaction_id_value = QLabel(str(self.transaction.get("id", "")))
-        transaction_id_value.setStyleSheet("font-weight: bold;")
-        transaction_layout.addRow(transaction_id_label, transaction_id_value)
-        
-        # Date
-        date_label = QLabel("التاريخ:")
-        date_value = QLabel(self.transaction.get("date", ""))
-        date_value.setStyleSheet("font-weight: bold;")
-        transaction_layout.addRow(date_label, date_value)
-        
-        # Amount
-        amount_label = QLabel("المبلغ:")
-        amount = self.transaction.get("amount", 0)
-        formatted_amount = f"{float(amount):,.2f}" if amount else "0.00"
-        amount_value = QLabel(formatted_amount)
-        amount_value.setStyleSheet("font-weight: bold;")
-        transaction_layout.addRow(amount_label, amount_value)
-        
-        # Status
-        status_label = QLabel("الحالة:")
-        status = self.transaction.get("status", "pending")
-        status_arabic = get_status_arabic(status)
-        status_value = QLabel(status_arabic)
-        status_value.setStyleSheet(f"font-weight: bold; color: {get_status_text_color(status)};")
-        transaction_layout.addRow(status_label, status_value)
-        
-        transaction_group.setLayout(transaction_layout)
+        # Transaction info group with improved styling
+        transaction_group = self._create_transaction_group()
         layout.addWidget(transaction_group)
         
         # Sender info group
-        sender_group = QGroupBox("معلومات المرسل")
-        sender_layout = QFormLayout()
-        
-        # Sender name
-        sender_name_label = QLabel("الاسم:")
-        sender_name_value = QLabel(self.transaction.get("sender_name", ""))
-        sender_name_value.setStyleSheet("font-weight: bold;")
-        sender_layout.addRow(sender_name_label, sender_name_value)
-        
-        # Sender mobile
-        sender_mobile_label = QLabel("رقم الهاتف:")
-        sender_mobile_value = QLabel(self.transaction.get("sender_mobile", ""))
-        sender_layout.addRow(sender_mobile_label, sender_mobile_value)
-        
-        # Sender ID
-        sender_id_label = QLabel("رقم الهوية:")
-        sender_id_value = QLabel(self.transaction.get("sender_id", ""))
-        sender_layout.addRow(sender_id_label, sender_id_value)
-        
-        # Sender address
-        sender_address_label = QLabel("العنوان:")
-        sender_address_value = QLabel(self.transaction.get("sender_address", ""))
-        sender_layout.addRow(sender_address_label, sender_address_value)
-        
-        sender_group.setLayout(sender_layout)
+        sender_group = self._create_sender_group()
         layout.addWidget(sender_group)
         
         # Receiver info group
-        receiver_group = QGroupBox("معلومات المستلم")
-        receiver_layout = QFormLayout()
-        
-        # Receiver name
-        receiver_name_label = QLabel("الاسم:")
-        receiver_name_value = QLabel(self.transaction.get("receiver_name", ""))
-        receiver_name_value.setStyleSheet("font-weight: bold;")
-        receiver_layout.addRow(receiver_name_label, receiver_name_value)
-        
-        # Receiver mobile
-        receiver_mobile_label = QLabel("رقم الهاتف:")
-        receiver_mobile_value = QLabel(self.transaction.get("receiver_mobile", ""))
-        receiver_layout.addRow(receiver_mobile_label, receiver_mobile_value)
-        
-        # Receiver ID
-        receiver_id_label = QLabel("رقم الهوية:")
-        receiver_id_value = QLabel(self.transaction.get("receiver_id", ""))
-        receiver_layout.addRow(receiver_id_label, receiver_id_value)
-        
-        # Receiver address
-        receiver_address_label = QLabel("العنوان:")
-        receiver_address_value = QLabel(self.transaction.get("receiver_address", ""))
-        receiver_layout.addRow(receiver_address_label, receiver_address_value)
-        
-        receiver_group.setLayout(receiver_layout)
+        receiver_group = self._create_receiver_group()
         layout.addWidget(receiver_group)
         
         # Additional info group
-        additional_group = QGroupBox("معلومات إضافية")
-        additional_layout = QFormLayout()
-        
-        # Employee
-        employee_label = QLabel("الموظف:")
-        employee_value = QLabel(self.transaction.get("employee_name", ""))
-        additional_layout.addRow(employee_label, employee_value)
-        
-        # Branch
-        branch_label = QLabel("الفرع المرسل:")
-        branch_value = QLabel(self.transaction.get("sending_branch_name", ""))
-        additional_layout.addRow(branch_label, branch_value)
-        
-        # Destination branch
-        dest_branch_label = QLabel("الفرع المستلم:")
-        dest_branch_value = QLabel(self.transaction.get("destination_branch_name", ""))
-        additional_layout.addRow(dest_branch_label, dest_branch_value)
-        
-        # Add currency
-        currency_label = QLabel("العملة:")
-        currency_value = QLabel(self.transaction.get("currency", ""))
-        currency_value.setStyleSheet("font-weight: bold;")
-        transaction_layout.addRow(currency_label, currency_value)
-        
-        # Add branch governorate
-        branch_gov_label = QLabel("محافظة الفرع:")
-        branch_gov_value = QLabel(self.transaction.get("branch_governorate", ""))
-        branch_gov_value.setStyleSheet("font-weight: bold;")
-        transaction_layout.addRow(branch_gov_label, branch_gov_value)
-            
-        # Notes
-        notes_label = QLabel("ملاحظات:")
-        notes_value = QLabel(self.transaction.get("notes", ""))
-        notes_value.setWordWrap(True)
-        additional_layout.addRow(notes_label, notes_value)
-        
-        additional_group.setLayout(additional_layout)
+        additional_group = self._create_additional_group()
         layout.addWidget(additional_group)
         
-        # Buttons
+        # Buttons with improved styling
         buttons_layout = QHBoxLayout()
+        buttons_layout.setSpacing(10)
         
         print_button = QPushButton("طباعة")
         print_button.setStyleSheet("""
             QPushButton {
                 background-color: #3498db;
                 color: white;
-                border-radius: 5px;
-                padding: 8px 16px;
-                font-weight: bold;
             }
             QPushButton:hover {
                 background-color: #2980b9;
@@ -198,9 +94,6 @@ class TransactionDetailsDialog(QDialog):
             QPushButton {
                 background-color: #e74c3c;
                 color: white;
-                border-radius: 5px;
-                padding: 8px 16px;
-                font-weight: bold;
             }
             QPushButton:hover {
                 background-color: #c0392b;
@@ -210,43 +103,167 @@ class TransactionDetailsDialog(QDialog):
         buttons_layout.addWidget(close_button)
         
         layout.addLayout(buttons_layout)
+        self.setLayout(layout)
+    
+    def _create_transaction_group(self):
+        """Create transaction info group with improved layout."""
+        group = QGroupBox("معلومات التحويل")
+        layout = QFormLayout()
+        layout.setSpacing(10)
         
-        self.setLayout(layout)  # Dark gray default
+        # Add transaction details with improved formatting
+        self._add_form_row(layout, "رقم التحويل:", str(self.transaction.get("id", "")), True)
+        self._add_form_row(layout, "التاريخ:", self.transaction.get("date", ""), True)
+        
+        # Format amount with currency
+        amount = self.transaction.get("amount", 0)
+        formatted_amount = f"{float(amount):,.2f} {self.transaction.get('currency', '')}"
+        self._add_form_row(layout, "المبلغ:", formatted_amount, True)
+        
+        # Add status with color
+        status = self.transaction.get("status", "pending")
+        status_arabic = get_status_arabic(status)
+        status_label = QLabel(status_arabic)
+        status_label.setStyleSheet(f"color: {get_status_text_color(status)}; font-weight: bold;")
+        layout.addRow(QLabel("الحالة:"), status_label)
+        
+        group.setLayout(layout)
+        return group
+    
+    def _create_sender_group(self):
+        """Create sender info group with improved layout."""
+        group = QGroupBox("معلومات المرسل")
+        layout = QFormLayout()
+        layout.setSpacing(10)
+        
+        self._add_form_row(layout, "الاسم:", self.transaction.get("sender_name", ""), True)
+        self._add_form_row(layout, "رقم الهاتف:", self.transaction.get("sender_mobile", ""))
+        self._add_form_row(layout, "رقم الهوية:", self.transaction.get("sender_id", ""))
+        self._add_form_row(layout, "العنوان:", self.transaction.get("sender_address", ""))
+        
+        group.setLayout(layout)
+        return group
+    
+    def _create_receiver_group(self):
+        """Create receiver info group with improved layout."""
+        group = QGroupBox("معلومات المستلم")
+        layout = QFormLayout()
+        layout.setSpacing(10)
+        
+        self._add_form_row(layout, "الاسم:", self.transaction.get("receiver_name", ""), True)
+        self._add_form_row(layout, "رقم الهاتف:", self.transaction.get("receiver_mobile", ""))
+        self._add_form_row(layout, "رقم الهوية:", self.transaction.get("receiver_id", ""))
+        self._add_form_row(layout, "العنوان:", self.transaction.get("receiver_address", ""))
+        
+        group.setLayout(layout)
+        return group
+    
+    def _create_additional_group(self):
+        """Create additional info group with improved layout."""
+        group = QGroupBox("معلومات إضافية")
+        layout = QFormLayout()
+        layout.setSpacing(10)
+        
+        self._add_form_row(layout, "الموظف:", self.transaction.get("employee_name", ""))
+        self._add_form_row(layout, "الفرع المرسل:", self.transaction.get("sending_branch_name", ""))
+        self._add_form_row(layout, "الفرع المستلم:", self.transaction.get("destination_branch_name", ""))
+        self._add_form_row(layout, "محافظة الفرع:", self.transaction.get("branch_governorate", ""))
+        
+        # Add notes with word wrap
+        notes_label = QLabel(self.transaction.get("notes", ""))
+        notes_label.setWordWrap(True)
+        notes_label.setStyleSheet("padding: 5px; background-color: #f8f9fa; border-radius: 4px;")
+        layout.addRow(QLabel("ملاحظات:"), notes_label)
+        
+        group.setLayout(layout)
+        return group
+    
+    def _add_form_row(self, layout, label_text, value, is_bold=False):
+        """Add a form row with improved styling."""
+        label = QLabel(label_text)
+        value_label = QLabel(str(value))
+        if is_bold:
+            value_label.setStyleSheet("font-weight: bold;")
+        layout.addRow(label, value_label)
     
     def print_transaction(self):
-        """Print the transaction details."""
-        # Create printable content
-        printer = QPrinter()
-        print_dialog = QPrintDialog(printer, self)
-        
-        if print_dialog.exec() == QDialog.DialogCode.Accepted:
-            # Create a temporary widget to hold the print content
-            print_widget = QTextEdit()
-            print_widget.setHtml(f"""
-                <div style='text-align: center; font-family: Arial;'>
-                    <h1 style='color: #2c3e50;'>تفاصيل التحويل</h1>
-                    <hr>
-                    <div style='text-align: right;'>
-                        <p><b>رقم التحويل:</b> {self.transaction.get('id', '')}</p>
-                        <p><b>التاريخ:</b> {self.transaction.get('date', '')}</p>
-                        <h3 style='color: #e74c3c;'>المرسل:</h3>
-                        <p>{self.transaction.get('sender_name', '')}</p>
-                        <p>الهاتف: {self.transaction.get('sender_mobile', '')}</p>
-                        <p>الهوية: {self.transaction.get('sender_id', '')}</p>
-                        <p>العنوان: {self.transaction.get('sender_address', '')}</p>
-                        <h3 style='color: #3498db;'>المستلم:</h3>
-                        <p>{self.transaction.get('receiver_name', '')}</p>
-                        <p>الهاتف: {self.transaction.get('receiver_mobile', '')}</p>
-                        <p>الهوية: {self.transaction.get('receiver_id', '')}</p>
-                        <p>العنوان: {self.transaction.get('receiver_address', '')}</p>
-                        <p><b>المبلغ:</b> {self.transaction.get('amount', '')}</p>
-                        <p><b>حالة التحويل:</b> {get_status_arabic(self.transaction.get('status', ''))}</p>
-                        <p><b>الموظف:</b> {self.transaction.get('employee_name', '')}</p>
-                        <p><b>الفرع:</b> {self.transaction.get('branch_name', '')}</p>
-                        <p><b>ملاحظات:</b> {self.transaction.get('notes', '')}</p>
-                        <hr>
-                        <p style='color: #95a5a6;'>شكراً لاستخدامكم خدماتنا</p>
-                    </div>
-                </div>
-            """)
-            print_widget.print(printer)
+        """Print transaction details with improved formatting."""
+        try:
+            printer = QPrinter()
+            printer.setPageSize(QPrinter.PageSize.A4)
+            printer.setOrientation(QPrinter.Orientation.Portrait)
+            
+            print_dialog = QPrintDialog(printer, self)
+            if print_dialog.exec() == QDialog.DialogCode.Accepted:
+                # Create a temporary widget for printing
+                print_widget = QTextEdit()
+                print_widget.setHtml(self._generate_print_html())
+                
+                # Print the document
+                document = QTextDocument()
+                document.setHtml(print_widget.toHtml())
+                document.print_(printer)
+                
+                QMessageBox.information(self, "نجاح", "تمت الطباعة بنجاح")
+        except Exception as e:
+            QMessageBox.warning(self, "خطأ", f"حدث خطأ أثناء الطباعة: {str(e)}")
+    
+    def _generate_print_html(self):
+        """Generate HTML for printing with improved formatting."""
+        return f"""
+        <div style='font-family: Arial; direction: rtl; padding: 20px;'>
+            <h1 style='color: #2c3e50; text-align: center;'>تفاصيل التحويل</h1>
+            <hr style='border: 1px solid #3498db;'>
+            
+            <div style='margin: 20px 0;'>
+                <h2 style='color: #3498db;'>معلومات التحويل</h2>
+                <table style='width: 100%; border-collapse: collapse;'>
+                    <tr>
+                        <td style='padding: 8px; border: 1px solid #ddd;'><b>رقم التحويل:</b></td>
+                        <td style='padding: 8px; border: 1px solid #ddd;'>{self.transaction.get('id', '')}</td>
+                    </tr>
+                    <tr>
+                        <td style='padding: 8px; border: 1px solid #ddd;'><b>التاريخ:</b></td>
+                        <td style='padding: 8px; border: 1px solid #ddd;'>{self.transaction.get('date', '')}</td>
+                    </tr>
+                    <tr>
+                        <td style='padding: 8px; border: 1px solid #ddd;'><b>المبلغ:</b></td>
+                        <td style='padding: 8px; border: 1px solid #ddd;'>{self.transaction.get('amount', '')} {self.transaction.get('currency', '')}</td>
+                    </tr>
+                </table>
+            </div>
+            
+            <div style='margin: 20px 0;'>
+                <h2 style='color: #e74c3c;'>معلومات المرسل</h2>
+                <table style='width: 100%; border-collapse: collapse;'>
+                    <tr>
+                        <td style='padding: 8px; border: 1px solid #ddd;'><b>الاسم:</b></td>
+                        <td style='padding: 8px; border: 1px solid #ddd;'>{self.transaction.get('sender_name', '')}</td>
+                    </tr>
+                    <tr>
+                        <td style='padding: 8px; border: 1px solid #ddd;'><b>رقم الهاتف:</b></td>
+                        <td style='padding: 8px; border: 1px solid #ddd;'>{self.transaction.get('sender_mobile', '')}</td>
+                    </tr>
+                </table>
+            </div>
+            
+            <div style='margin: 20px 0;'>
+                <h2 style='color: #2ecc71;'>معلومات المستلم</h2>
+                <table style='width: 100%; border-collapse: collapse;'>
+                    <tr>
+                        <td style='padding: 8px; border: 1px solid #ddd;'><b>الاسم:</b></td>
+                        <td style='padding: 8px; border: 1px solid #ddd;'>{self.transaction.get('receiver_name', '')}</td>
+                    </tr>
+                    <tr>
+                        <td style='padding: 8px; border: 1px solid #ddd;'><b>رقم الهاتف:</b></td>
+                        <td style='padding: 8px; border: 1px solid #ddd;'>{self.transaction.get('receiver_mobile', '')}</td>
+                    </tr>
+                </table>
+            </div>
+            
+            <div style='margin: 20px 0; text-align: center; color: #7f8c8d;'>
+                <p>شكراً لاستخدامكم خدماتنا</p>
+                <p>تاريخ الطباعة: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+            </div>
+        </div>
+        """

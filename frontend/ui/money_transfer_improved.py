@@ -26,7 +26,7 @@ class TransactionTableModel(QAbstractTableModel):
     
     HEADERS = [
         "رقم التحويل", "التاريخ", "المرسل", "المستلم", "المبلغ", "العملة",
-        "محافظة المستلم", "الحالة", "النوع", "اسم الموظف", "الفرع المرسل",
+        "محافظة المستلم", "الحالة", "اسم الموظف", "الفرع المرسل",
         "الفرع المستلم", "محافظة الفرع"
     ]
     
@@ -98,15 +98,13 @@ class TransactionTableModel(QAbstractTableModel):
                 return transaction.get("receiver_governorate", "")
             elif col == 7:  # Status
                 return get_status_arabic(transaction.get("status", ""))
-            elif col == 8:  # Type
-                return self._get_transaction_type(transaction)
-            elif col == 9:  # Employee Name
+            elif col == 8:  # Employee Name
                 return transaction.get("employee_name", "")
-            elif col == 10:  # Sending Branch
+            elif col == 9:  # Sending Branch
                 return transaction.get("sending_branch_name", "")
-            elif col == 11:  # Destination Branch
+            elif col == 10:  # Destination Branch
                 return transaction.get("destination_branch_name", "")
-            elif col == 12:  # Branch Governorate
+            elif col == 11:  # Branch Governorate
                 return transaction.get("branch_governorate", "")
         except Exception as e:
             print(f"Error formatting column {col}: {e}")
@@ -318,6 +316,8 @@ class MoneyTransferApp(QMainWindow, ReceiptPrinter, TransferCore, MenuAuthMixin)
     """Money Transfer Application for the Internal Payment System."""
     transferCompleted = pyqtSignal()
     logoutRequested = pyqtSignal()
+    outgoingTransactionsUpdated = pyqtSignal(list)  # New signal for outgoing transactions
+    incomingTransactionsUpdated = pyqtSignal(list)  # New signal for incoming transactions
     
     def __init__(self, user_token=None, branch_id=None, user_id=None, user_role="employee", username=None, full_name=None):
         super().__init__()
@@ -330,7 +330,7 @@ class MoneyTransferApp(QMainWindow, ReceiptPrinter, TransferCore, MenuAuthMixin)
         self.api_url = os.environ["API_URL"]
         self.per_page_outgoing = 18
         self.per_page_incoming = 18
-        self.current_zoom = 100  # Track current zoom level
+        self.current_zoom = 100
         
         # Initialize search manager
         self.search_manager = SearchManager()
@@ -363,15 +363,9 @@ class MoneyTransferApp(QMainWindow, ReceiptPrinter, TransferCore, MenuAuthMixin)
         self.total_pages_incoming = 1
         self.per_page_incoming = 18
         
-        # Set up refresh timer for transactions and notifications
-        self.refresh_timer = QTimer(self)
-        self.refresh_timer.timeout.connect(self.refresh_data)
-        self.refresh_timer.start(30000)  # Refresh every 30 seconds
-        
-        # Set up branch refresh timer
-        self.branch_timer = QTimer()
-        self.branch_timer.timeout.connect(self.refresh_branches)
-        self.branch_timer.start(30000)  # Refresh every 5 seconds
+        # Connect signals for automatic updates
+        self.outgoingTransactionsUpdated.connect(self.update_outgoing_transactions)
+        self.incomingTransactionsUpdated.connect(self.update_incoming_transactions)
         
         # Add loading overlay
         self.loading_overlay = LoadingOverlay(self)
@@ -464,33 +458,16 @@ class MoneyTransferApp(QMainWindow, ReceiptPrinter, TransferCore, MenuAuthMixin)
         self.receive_status_filter.addItem("مرفوض", "rejected")
         self.receive_status_filter.addItem("معلق", "on_hold")
         self.receive_status_filter.currentIndexChanged.connect(self.filter_received_transactions)
-        self.receive_status_filter.currentIndexChanged.connect(
-            lambda: self.on_filter_change('incoming')
-        )
         filter_layout.addWidget(self.receive_status_filter)
-        
-        # Filter by type
-        type_label = QLabel("تصفية حسب النوع:")
-        filter_layout.addWidget(type_label)
-        
-        self.receive_type_filter = QComboBox()
-        self.receive_type_filter.addItem("الكل", "all")
-        self.receive_type_filter.addItem("وارد", "incoming")
-        self.receive_type_filter.addItem("صادر", "outgoing")
-        self.receive_type_filter.currentIndexChanged.connect(self.filter_received_transactions)
-        self.receive_type_filter.currentIndexChanged.connect(
-            lambda: self.on_filter_change('incoming')
-        )
-        filter_layout.addWidget(self.receive_type_filter)
         
         layout.addLayout(filter_layout)
         
         # Received transactions table
         self.received_table = QTableWidget()
-        self.received_table.setColumnCount(14)  # Changed from 13 to 14
+        self.received_table.setColumnCount(13)  # Changed from 14 to 13
         self.received_table.setHorizontalHeaderLabels([
             "رقم التحويل", "التاريخ", "المرسل", "المستلم", "المبلغ", "العملة", 
-            "محافظة المستلم", "الحالة", "النوع", "اسم الموظف", "الفرع المرسل", 
+            "محافظة المستلم", "الحالة", "اسم الموظف", "الفرع المرسل", 
             "الفرع المستلم", "محافظة الفرع", "مستلم؟"
         ])
         self.received_table.horizontalHeader().setStretchLastSection(True)
@@ -590,17 +567,15 @@ class MoneyTransferApp(QMainWindow, ReceiptPrinter, TransferCore, MenuAuthMixin)
                 
                 # Reset pagination
                 self.current_page_incoming = 1
-                self.filter_received_transactions()
                 
                 # Store transactions for filtering
                 self.all_received_transactions = transactions
                 
-                # Apply current filter
-                self.filter_received_transactions()
+                # Emit signal to update UI
+                self.incomingTransactionsUpdated.emit(transactions)
                 
                 # Update status
                 self.receive_status_label.setText("تم تحميل بيانات التحويلات الواردة بنجاح")
-                self.receive_count_label.setText(f"عدد التحويلات: {len(transactions)}")
             else:
                 self.receive_status_label.setText(f"خطأ في تحميل بيانات التحويلات المستلمة: {response.status_code}")
                 QMessageBox.warning(self, "خطأ", f"فشل تحميل بيانات التحويلات المستلمة: {response.text}")
@@ -611,13 +586,12 @@ class MoneyTransferApp(QMainWindow, ReceiptPrinter, TransferCore, MenuAuthMixin)
                             "تعذر الاتصال بالخادم. الرجاء التحقق من اتصالك بالإنترنت وحالة الخادم.")
             
     def filter_received_transactions(self):
-        """Filter received transactions based on selected status and type."""
+        """Filter received transactions based on selected status."""
         if not hasattr(self, 'all_received_transactions'):
             return
         
         # Get filter criteria
         selected_status = self.receive_status_filter.currentData()
-        selected_type = self.receive_type_filter.currentData()
         
         # Start with all transactions
         filtered_transactions = self.all_received_transactions
@@ -625,15 +599,6 @@ class MoneyTransferApp(QMainWindow, ReceiptPrinter, TransferCore, MenuAuthMixin)
         # Apply status filter if not "all"
         if selected_status != "all":
             filtered_transactions = [t for t in filtered_transactions if t.get("status", "") == selected_status]
-        
-        # Apply type filter if not "all"
-        if selected_type != "all":
-            if selected_type == "incoming":
-                # Filter for incoming transactions (destination branch is current branch)
-                filtered_transactions = [t for t in filtered_transactions if t.get("destination_branch_id") == self.branch_id]
-            elif selected_type == "outgoing":
-                # Filter for outgoing transactions (source branch is current branch)
-                filtered_transactions = [t for t in filtered_transactions if t.get("branch_id") == self.branch_id]
         
         # Pagination calculations
         self.total_pages_incoming = max(1, (len(filtered_transactions) + self.per_page_incoming - 1) // self.per_page_incoming)
@@ -682,32 +647,27 @@ class MoneyTransferApp(QMainWindow, ReceiptPrinter, TransferCore, MenuAuthMixin)
             status_item.setBackground(get_status_color(status))
             self.received_table.setItem(i, 7, status_item)
             
-            # Column 8: Type indicator
-            type_item = self.create_incoming_type_item(transaction)
-            self.received_table.setItem(i, 8, type_item)
+            # Employee name
+            self.received_table.setItem(i, 8, QTableWidgetItem(transaction.get("employee_name", "")))
             
-            # Shift existing columns right by 1
-            # Column 9: Employee name (previously 8)
-            self.received_table.setItem(i, 9, QTableWidgetItem(transaction.get("employee_name", "")))
-            
-            # Column 10: Sending branch (previously 9)
+            # Sending branch
             sending_branch_id = transaction.get("branch_id")
             sending_branch_name = self.branch_id_to_name.get(sending_branch_id, "غير معروف")
-            self.received_table.setItem(i, 10, QTableWidgetItem(sending_branch_name))
+            self.received_table.setItem(i, 9, QTableWidgetItem(sending_branch_name))
             
-            # Column 11: Destination branch (previously 10)
+            # Destination branch
             dest_branch_id = transaction.get("destination_branch_id")
             dest_branch_name = self.branch_id_to_name.get(dest_branch_id, "غير معروف")
-            self.received_table.setItem(i, 11, QTableWidgetItem(dest_branch_name))
+            self.received_table.setItem(i, 10, QTableWidgetItem(dest_branch_name))
             
-            # Column 12: Branch governorate (previously 11)
-            self.received_table.setItem(i, 12, QTableWidgetItem(transaction.get("branch_governorate", "")))
+            # Branch governorate
+            self.received_table.setItem(i, 11, QTableWidgetItem(transaction.get("branch_governorate", "")))
             
-            # Column 13: Received status (previously 12)
+            # Received status
             is_received = transaction.get("is_received", False)
             received_item = QTableWidgetItem("نعم" if is_received else "لا")
             received_item.setBackground(QColor(200, 255, 200) if is_received else QColor(255, 200, 200))
-            self.received_table.setItem(i, 13, received_item)
+            self.received_table.setItem(i, 12, received_item)
         
         # Update count
         self.receive_count_label.setText(
@@ -1081,9 +1041,6 @@ class MoneyTransferApp(QMainWindow, ReceiptPrinter, TransferCore, MenuAuthMixin)
         self.status_filter.addItem("مرفوض", "rejected")
         self.status_filter.addItem("معلق", "on_hold")
         self.status_filter.currentIndexChanged.connect(self.filter_transactions)
-        self.status_filter.currentIndexChanged.connect(
-            lambda: self.on_filter_change('outgoing')
-        )
         controls_layout.addWidget(self.status_filter)
         
         layout.addLayout(controls_layout)
@@ -1337,12 +1294,11 @@ class MoneyTransferApp(QMainWindow, ReceiptPrinter, TransferCore, MenuAuthMixin)
                 # Reset pagination
                 self.current_page_outgoing = 1
                 
-                # Update the model with the new data
-                self.filter_transactions()
+                # Emit signal to update UI
+                self.outgoingTransactionsUpdated.emit(transactions)
                 
                 # Update status
                 self.status_label.setText("تم تحميل بيانات التحويلات الصادرة بنجاح")
-                self.count_label.setText(f"عدد التحويلات: {len(transactions)}")
             else:
                 self.status_label.setText(f"خطأ في تحميل بيانات التحويلات: {response.status_code}")
                 QMessageBox.warning(self, "خطأ", f"فشل تحميل بيانات التحويلات: {response.text}")
@@ -1999,10 +1955,12 @@ class MoneyTransferApp(QMainWindow, ReceiptPrinter, TransferCore, MenuAuthMixin)
         self.loading_overlay.hide()
         QMessageBox.information(self, "نجاح", "تم إرسال التحويل بنجاح")
         self.clear_form()
+        
+        # Update transactions immediately
         self.load_transactions()
         self.load_notifications()
         self.transferCompleted.emit()
-        
+
     def handle_transfer_error(self, error_msg):
         """Handle transfer submission error."""
         self.loading_overlay.hide()
@@ -2013,6 +1971,84 @@ class MoneyTransferApp(QMainWindow, ReceiptPrinter, TransferCore, MenuAuthMixin)
         super().resizeEvent(event)
         if hasattr(self, 'loading_overlay'):
             self.loading_overlay.resize(self.size())
+
+    def update_outgoing_transactions(self, transactions):
+        """Update outgoing transactions table with new data."""
+        if hasattr(self, 'transaction_model'):
+            self.transaction_model.update_data(transactions)
+            self.count_label.setText(f"عدد التحويلات: {len(transactions)}")
+            self.update_pagination_controls_outgoing()
+
+    def update_incoming_transactions(self, transactions):
+        """Update incoming transactions table with new data."""
+        if hasattr(self, 'received_table'):
+            self.received_table.setRowCount(len(transactions))
+            for i, transaction in enumerate(transactions):
+                # Update table items as in filter_received_transactions
+                self.update_received_table_row(i, transaction)
+            self.receive_count_label.setText(f"عدد التحويلات: {len(transactions)}")
+            self.update_pagination_controls_incoming()
+
+    def update_received_table_row(self, row, transaction):
+        """Update a single row in the received transactions table."""
+        # Transaction ID
+        self.received_table.setItem(row, 0, QTableWidgetItem(str(transaction.get("id", ""))))
+        
+        # Date
+        date_str = transaction.get("date", "")
+        formatted_date = date_str
+        try:
+            date_obj = datetime.strptime(date_str, "%Y-%m-%d")
+            formatted_date = date_obj.strftime("%Y-%m-%d")
+        except:
+            pass
+        self.received_table.setItem(row, 1, QTableWidgetItem(formatted_date))
+        
+        # Sender
+        self.received_table.setItem(row, 2, QTableWidgetItem(transaction.get("sender", "")))
+        
+        # Receiver
+        self.received_table.setItem(row, 3, QTableWidgetItem(transaction.get("receiver", "")))
+        
+        # Amount
+        amount = transaction.get("amount", 0)
+        formatted_amount = f"{float(amount):,.2f}" if amount else "0.00"
+        self.received_table.setItem(row, 4, QTableWidgetItem(formatted_amount))
+        
+        # Currency
+        self.received_table.setItem(row, 5, QTableWidgetItem(transaction.get("currency", "")))
+        
+        # Receiver governorate
+        self.received_table.setItem(row, 6, QTableWidgetItem(transaction.get("receiver_governorate", "")))
+        
+        # Status
+        status = transaction.get("status", "pending")
+        status_arabic = get_status_arabic(status)
+        status_item = QTableWidgetItem(status_arabic)
+        status_item.setBackground(get_status_color(status))
+        self.received_table.setItem(row, 7, status_item)
+        
+        # Employee name
+        self.received_table.setItem(row, 8, QTableWidgetItem(transaction.get("employee_name", "")))
+        
+        # Sending branch
+        sending_branch_id = transaction.get("branch_id")
+        sending_branch_name = self.branch_id_to_name.get(sending_branch_id, "غير معروف")
+        self.received_table.setItem(row, 9, QTableWidgetItem(sending_branch_name))
+        
+        # Destination branch
+        dest_branch_id = transaction.get("destination_branch_id")
+        dest_branch_name = self.branch_id_to_name.get(dest_branch_id, "غير معروف")
+        self.received_table.setItem(row, 10, QTableWidgetItem(dest_branch_name))
+        
+        # Branch governorate
+        self.received_table.setItem(row, 11, QTableWidgetItem(transaction.get("branch_governorate", "")))
+        
+        # Received status
+        is_received = transaction.get("is_received", False)
+        received_item = QTableWidgetItem("نعم" if is_received else "لا")
+        received_item.setBackground(QColor(200, 255, 200) if is_received else QColor(255, 200, 200))
+        self.received_table.setItem(row, 12, received_item)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
