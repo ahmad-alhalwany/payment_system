@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
 )
 import os
 from PyQt6.QtGui import QFont, QColor, QAction
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QDate, QAbstractTableModel, QModelIndex
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QDate, QAbstractTableModel, QModelIndex, QThread
 from datetime import datetime
 from ui.user_search import UserSearchDialog
 from ui.custom_widgets import ModernGroupBox, ModernButton
@@ -224,6 +224,96 @@ class SearchManager:
         self.search_transactions(transactions, '', ['sender'])
         self.search_transactions(transactions, '', ['receiver'])
 
+class TransferWorker(QThread):
+    """Worker thread for handling transfer operations"""
+    finished = pyqtSignal(dict)
+    error = pyqtSignal(str)
+    progress = pyqtSignal(str)
+    
+    def __init__(self, api_url, data, headers):
+        super().__init__()
+        self.api_url = api_url
+        self.data = data
+        self.headers = headers
+        
+    def run(self):
+        try:
+            # Emit progress signal
+            self.progress.emit("جاري التحقق من البيانات...")
+            
+            # Validate data
+            if not self.validate_data():
+                self.error.emit("بيانات غير صالحة")
+                return
+                
+            # Emit progress signal
+            self.progress.emit("جاري إرسال التحويل...")
+            
+            # Send transfer
+            response = requests.post(
+                f"{self.api_url}/transactions/",
+                json=self.data,
+                headers=self.headers,
+                timeout=10
+            )
+            
+            if response.status_code == 201:
+                self.finished.emit(response.json())
+            else:
+                error_msg = f"فشل إرسال التحويل: رمز الحالة {response.status_code}"
+                try:
+                    error_data = response.json()
+                    if "detail" in error_data:
+                        if isinstance(error_data["detail"], list):
+                            error_msg = "\n".join([str(err) for err in error_data["detail"]])
+                        else:
+                            error_msg = str(error_data["detail"])
+                except:
+                    pass
+                self.error.emit(error_msg)
+                
+        except Exception as e:
+            self.error.emit(f"خطأ في الاتصال: {str(e)}")
+            
+    def validate_data(self):
+        """Validate transfer data"""
+        required_fields = [
+            "sender", "sender_mobile", "receiver", "receiver_mobile",
+            "amount", "currency", "destination_branch_id"
+        ]
+        
+        for field in required_fields:
+            if not self.data.get(field):
+                return False
+                
+        return True
+
+class LoadingOverlay(QWidget):
+    """Loading overlay widget"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setup_ui()
+        
+    def setup_ui(self):
+        self.setStyleSheet("""
+            QWidget {
+                background-color: rgba(0, 0, 0, 0.7);
+            }
+            QLabel {
+                color: white;
+                font-size: 14px;
+                font-weight: bold;
+            }
+        """)
+        
+        layout = QVBoxLayout(self)
+        self.status_label = QLabel("جاري المعالجة...")
+        self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.status_label)
+        
+    def set_status(self, text):
+        self.status_label.setText(text)
+
 class MoneyTransferApp(QMainWindow, ReceiptPrinter, TransferCore, MenuAuthMixin):
     """Money Transfer Application for the Internal Payment System."""
     transferCompleted = pyqtSignal()
@@ -282,6 +372,10 @@ class MoneyTransferApp(QMainWindow, ReceiptPrinter, TransferCore, MenuAuthMixin)
         self.branch_timer = QTimer()
         self.branch_timer.timeout.connect(self.refresh_branches)
         self.branch_timer.start(30000)  # Refresh every 5 seconds
+        
+        # Add loading overlay
+        self.loading_overlay = LoadingOverlay(self)
+        self.loading_overlay.hide()
         
     def setup_ui(self):
         """Set up the UI components."""
@@ -1847,6 +1941,78 @@ class MoneyTransferApp(QMainWindow, ReceiptPrinter, TransferCore, MenuAuthMixin)
         
         help_dialog.setLayout(layout)
         help_dialog.exec()
+
+    def show_confirmation(self):
+        """Show confirmation dialog before submitting transfer."""
+        if not self.validate_transfer_form():
+            return
+            
+        data = self.prepare_transfer_data()
+        sending_branch_name = self.branch_id_to_name.get(self.branch_id, "غير معروف")
+        destination_branch_id = data.get("destination_branch_id")
+        destination_branch_name = self.branch_id_to_name.get(destination_branch_id, "غير معروف")
+        
+        msg = (
+            f"تأكيد تفاصيل التحويل:\n\n"
+            f"المرسل: {data['sender']} ({data['sender_mobile']})\n"
+            f"المستلم: {data['receiver']} ({data['receiver_mobile']})\n"
+            f"المبلغ: {data['amount']:,.2f} {data['currency']}\n"
+            f"الضريبة: {data['tax_amount']:,.2f} {data['currency']} ({data['tax_rate']}%)\n"
+            f"الصافي: {data['net_amount']:,.2f} {data['currency']}\n"
+            f"من: {sending_branch_name}\n"
+            f"إلى: {destination_branch_name}\n\n"
+            f"هل تريد المتابعة؟"
+        )
+        
+        reply = QMessageBox.question(
+            self, "تأكيد التحويل", msg,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            self.submit_transfer(data)
+            
+    def submit_transfer(self, data):
+        """Submit the transfer using a worker thread."""
+        # Show loading overlay
+        self.loading_overlay.set_status("جاري إرسال التحويل...")
+        self.loading_overlay.show()
+        
+        # Create and start worker
+        self.transfer_worker = TransferWorker(
+            self.api_url,
+            data,
+            {"Authorization": f"Bearer {self.user_token}"} if self.user_token else {}
+        )
+        
+        # Connect signals
+        self.transfer_worker.finished.connect(self.handle_transfer_success)
+        self.transfer_worker.error.connect(self.handle_transfer_error)
+        self.transfer_worker.progress.connect(self.loading_overlay.set_status)
+        
+        # Start worker
+        self.transfer_worker.start()
+        
+    def handle_transfer_success(self, response_data):
+        """Handle successful transfer submission."""
+        self.loading_overlay.hide()
+        QMessageBox.information(self, "نجاح", "تم إرسال التحويل بنجاح")
+        self.clear_form()
+        self.load_transactions()
+        self.load_notifications()
+        self.transferCompleted.emit()
+        
+    def handle_transfer_error(self, error_msg):
+        """Handle transfer submission error."""
+        self.loading_overlay.hide()
+        QMessageBox.critical(self, "خطأ", error_msg)
+        
+    def resizeEvent(self, event):
+        """Handle window resize to update loading overlay size."""
+        super().resizeEvent(event)
+        if hasattr(self, 'loading_overlay'):
+            self.loading_overlay.resize(self.size())
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
