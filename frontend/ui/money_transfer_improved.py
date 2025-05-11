@@ -848,7 +848,6 @@ class MoneyTransferApp(QMainWindow, ReceiptPrinter, TransferCore, MenuAuthMixin)
         if not self.confirm_checkbox.isChecked():
             QMessageBox.warning(self, "تحذير", "يجب تأكيد استلام المبلغ قبل المتابعة")
             return
-        
         # Validate required fields
         required_fields = {
             "اسم المستلم": self.receiver_name_input.text(),
@@ -856,7 +855,6 @@ class MoneyTransferApp(QMainWindow, ReceiptPrinter, TransferCore, MenuAuthMixin)
             "رقم الهوية": self.receiver_id_input.text(),
             "العنوان": self.receiver_address_input.text()
         }
-        
         missing_fields = [name for name, value in required_fields.items() if not value]
         if missing_fields:
             QMessageBox.warning(
@@ -865,7 +863,6 @@ class MoneyTransferApp(QMainWindow, ReceiptPrinter, TransferCore, MenuAuthMixin)
                 f"الرجاء إدخال جميع الحقول المطلوبة:\n{', '.join(missing_fields)}"
             )
             return
-        
         # Prepare data
         data = {
             "transaction_id": transaction_data["id"],
@@ -875,7 +872,6 @@ class MoneyTransferApp(QMainWindow, ReceiptPrinter, TransferCore, MenuAuthMixin)
             "receiver_address": self.receiver_address_input.text(),
             "receiver_governorate": self.receiver_governorate_input.currentText()
         }
-        
         try:
             headers = {"Authorization": f"Bearer {self.user_token}"} if self.user_token else {}
             response = requests.post(
@@ -883,22 +879,11 @@ class MoneyTransferApp(QMainWindow, ReceiptPrinter, TransferCore, MenuAuthMixin)
                 json=data,
                 headers=headers
             )
-            
             # Handle successful response
             if response.status_code == 200:
                 QMessageBox.information(self, "نجاح", "تم تأكيد استلام التحويل بنجاح")
                 dialog.accept()
-                
-                # Update and print receipt
-                transaction_data.update(data)
-                transaction_data.update({
-                    "received_by": self.full_name,
-                    "received_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "status": "completed"
-                })
-                self.print_receipt(transaction_data)
                 self.load_received_transactions()
-            
             # Handle error responses
             else:
                 try:
@@ -906,13 +891,11 @@ class MoneyTransferApp(QMainWindow, ReceiptPrinter, TransferCore, MenuAuthMixin)
                     error_msg = error_data.get("detail", "خطأ غير معروف")
                 except:
                     error_msg = response.text
-                    
                 QMessageBox.critical(
                     self,
                     "خطأ في الخادم",
                     f"فشل تأكيد الاستلام:\nكود الخطأ: {response.status_code}\nالرسالة: {error_msg}"
                 )
-                
         except Exception as e:
             QMessageBox.critical(
                 self,
