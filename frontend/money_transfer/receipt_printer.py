@@ -483,15 +483,18 @@ class ReceiptPrinter:
 
             # Check transaction status
             status = self.received_table.item(row, 7).text()
+            is_received = self.received_table.item(row, 12).text() if self.received_table.item(row, 12) else ""
             if status != "مكتمل":
                 QMessageBox.warning(self, "تحذير", "لا يمكن طباعة الإيصال للتحويلات غير المؤكدة")
+                return
+            if is_received != "نعم":
+                QMessageBox.warning(self, "تحذير", "لا يمكن طباعة الإيصال إلا بعد تأكيد الاستلام (عمود مستلم؟ = نعم)")
                 return
 
             # Collect transaction data
             def safe_item_text(item):
                 return item.text() if item else ""
             amount_str = safe_item_text(self.received_table.item(row, 4)).replace(',', '')
-            
             transaction_data = {
                 'id': safe_item_text(self.received_table.item(row, 0)),
                 'date': safe_item_text(self.received_table.item(row, 1)),
@@ -510,7 +513,6 @@ class ReceiptPrinter:
                 'received_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 'type': 'received'
             }
-
             # Print the receipt using the standard print_receipt method
             self.print_receipt(transaction_data)
 

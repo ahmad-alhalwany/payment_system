@@ -782,10 +782,10 @@ class TransactionReceived(BaseModel):
 @app.post("/mark-transaction-received/")
 def mark_transaction_received(received_data: TransactionReceived, current_user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     try:
-        # Verify transaction exists and belongs to current branch
+        # Verify transaction exists and belongs to current branch (الفرع المستلم)
         transaction = db.query(Transaction).filter(
             Transaction.id == received_data.transaction_id,
-            Transaction.branch_id == current_user["branch_id"]
+            Transaction.destination_branch_id == current_user["branch_id"]
         ).first()
         
         if not transaction:
