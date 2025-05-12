@@ -1,6 +1,7 @@
 import logging
 from logging.handlers import RotatingFileHandler
 import os
+import time
 
 # Logging setup
 log_dir = os.path.dirname(os.path.abspath(__file__))
@@ -1884,49 +1885,30 @@ def change_password(password_data: ChangePassword, db: Session = Depends(get_db)
 
 @app.delete("/users/{user_id}")
 def delete_user(user_id: int, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
-    # Only directors and branch managers can delete users
-    if current_user["role"] not in ["director", "branch_manager"]:
-        raise HTTPException(status_code=403, detail="Not enough permissions")
-    
-    # Find the user
+    require_role(current_user, ["director", "branch_manager"])
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    
-    # Directors can't be deleted
     if user.role == "director":
         raise HTTPException(status_code=403, detail="Directors cannot be deleted")
-    
-    # Branch managers can only delete employees in their branch
-    if current_user["role"] == "branch_manager" and (user.role != "employee" or user.branch_id != current_user["branch_id"]):
-        raise HTTPException(status_code=403, detail="You can only delete employees in your branch")
-    
-    # Delete the user
+    if current_user["role"] == "branch_manager":
+        if user.role != "employee" or user.branch_id != current_user["branch_id"]:
+            raise HTTPException(status_code=403, detail="You can only delete employees in your branch")
     db.delete(user)
     db.commit()
-    
     return {"status": "success", "message": "User deleted successfully"}
 
 @app.delete("/branches/{branch_id}/")
 def delete_branch(branch_id: int, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
-    # Only directors can delete branches
-    if current_user["role"] != "director":
-        raise HTTPException(status_code=403, detail="Not enough permissions")
-    
-    # Find the branch
+    require_role(current_user, ["director"])
     branch = db.query(Branch).filter(Branch.id == branch_id).first()
     if not branch:
         raise HTTPException(status_code=404, detail="Branch not found")
-    
-    # Check if there are users assigned to this branch
     users = db.query(User).filter(User.branch_id == branch_id).all()
     if users:
         raise HTTPException(status_code=400, detail="Cannot delete branch with assigned users")
-    
-    # Delete the branch
     db.delete(branch)
     db.commit()
-    
     return {"status": "success", "message": "Branch deleted successfully"}
 
 @app.get("/branches/stats/")
@@ -2834,4 +2816,51 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
             "detail": exc.detail,
         },
     )
+
+# Metrics variables
+metrics = {
+    'total_requests': 0,
+    'successful_requests': 0,
+    'failed_requests': 0,
+    'total_duration': 0.0
+}
+
+@app.middleware("http")
+async def log_request_metrics(request: Request, call_next):
+    start_time = time.time()
+    metrics['total_requests'] += 1
+    try:
+        response = await call_next(request)
+        duration = time.time() - start_time
+        metrics['total_duration'] += duration
+        if response.status_code < 400:
+            metrics['successful_requests'] += 1
+        else:
+            metrics['failed_requests'] += 1
+        logger.info(f"{request.method} {request.url.path} - {response.status_code} - {duration:.3f}s")
+        return response
+    except Exception as exc:
+        duration = time.time() - start_time
+        metrics['failed_requests'] += 1
+        metrics['total_duration'] += duration
+        logger.error(f"{request.method} {request.url.path} - 500 - {duration:.3f}s - Exception: {exc}")
+        raise
+
+@app.get("/metrics/")
+def get_metrics():
+    avg_duration = metrics['total_duration'] / metrics['total_requests'] if metrics['total_requests'] else 0
+    return {
+        "total_requests": metrics['total_requests'],
+        "successful_requests": metrics['successful_requests'],
+        "failed_requests": metrics['failed_requests'],
+        "average_duration": round(avg_duration, 4)
+    }
+
+def require_role(current_user, allowed_roles):
+    if current_user["role"] not in allowed_roles:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="ليس لديك الصلاحية الكافية.")
+
+def require_branch_access(current_user, branch_id):
+    if current_user["role"] == "branch_manager" and current_user["branch_id"] != branch_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="يمكنك فقط إدارة فرعك.")
 
