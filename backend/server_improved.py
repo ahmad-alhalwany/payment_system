@@ -15,11 +15,17 @@ from fastapi.middleware.cors import CORSMiddleware
 import sqlalchemy.exc
 from functools import lru_cache
 import logging
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 import shutil
 from fastapi import UploadFile, File
 import os
 from starlette.background import BackgroundTask
+from cache import cache, cache_result, get_branch_cache_key, get_transaction_cache_key, get_branch_transactions_cache_key
+from fastapi.requests import Request
+from fastapi.exception_handlers import RequestValidationError
+from fastapi.exceptions import RequestValidationError as FastAPIRequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
+import traceback
 
 app = FastAPI()
 
@@ -34,7 +40,11 @@ app.add_middleware(
 
 # Database URL
 engine = create_engine(
-    "postgresql+psycopg2://postgres:postgres@localhost/postgres"
+    "postgresql+psycopg2://postgres:postgres@localhost/postgres",
+    pool_size=10,
+    max_overflow=20,
+    pool_timeout=30,
+    pool_recycle=1800
 )
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
@@ -757,6 +767,12 @@ async def create_transaction(transaction: TransactionSchema, current_user: dict 
         employee_id = current_user.get("user_id")
         try:
             transaction_id = save_to_db(transaction, branch_id, employee_id, db)
+            # Invalidate relevant caches
+            cache.clear_pattern(f"branch_transactions:{transaction.branch_id}:*")
+            cache.clear_pattern(f"branch_transactions:{transaction.destination_branch_id}:*")
+            cache.delete(get_branch_cache_key(transaction.branch_id))
+            cache.delete(get_branch_cache_key(transaction.destination_branch_id))
+            
             return {
                 "status": "success",
                 "message": "تم إنشاء التحويل بنجاح",
@@ -1007,7 +1023,6 @@ def get_branches(request: Request, db: Session = Depends(get_db), current_user: 
             if include_employee_count:
                 employee_count = db.query(func.count(User.id)).filter(User.branch_id == branch.id).scalar() or 0
                 branch_data['employee_count'] = employee_count
-                print(f"Branch {branch.id} - employee_count: {employee_count}")
             branch_list.append(branch_data)
         return {"branches": branch_list}
     branches = db.query(Branch).all()
@@ -1044,9 +1059,15 @@ def get_branches(request: Request, db: Session = Depends(get_db), current_user: 
 
 @app.get("/branches/{branch_id}")
 def get_branch(branch_id: int, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
+    # Try to get from cache first
+    cache_key = get_branch_cache_key(branch_id)
+    cached_result = cache.get(cache_key)
+    if cached_result:
+        return cached_result
+
     # Special handling for System Manager branch (ID 0)
     if branch_id == 0:
-        return {
+        result = {
             "id": 0,
             "branch_id": "0",
             "name": "System Manager",
@@ -1066,6 +1087,8 @@ def get_branch(branch_id: int, db: Session = Depends(get_db), current_user: dict
                 "total_received": 0.0
             }
         }
+        cache.set(cache_key, result, expire=300)
+        return result
     
     # Authorization check
     if current_user["role"] == "branch_manager" and current_user["branch_id"] != branch_id:
@@ -1105,7 +1128,7 @@ def get_branch(branch_id: int, db: Session = Depends(get_db), current_user: dict
             detail=f"Database error: {str(e)}"
         )
 
-    return {
+    result = {
         "id": branch.id,
         "branch_id": branch.branch_id,
         "name": branch.name,
@@ -1124,6 +1147,11 @@ def get_branch(branch_id: int, db: Session = Depends(get_db), current_user: dict
         },
         "created_at": branch.created_at.strftime("%Y-%m-%d %H:%M:%S") if branch.created_at else None
     }
+
+    # Cache the result
+    cache.set(cache_key, result, expire=300)
+    
+    return result
 
 @app.get("/users/")
 def get_users(db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
@@ -1246,6 +1274,17 @@ def get_transactions(
     status: Optional[str] = None,
     date: Optional[str] = None
 ):
+    # Generate cache key based on parameters
+    cache_key = get_branch_transactions_cache_key(
+        current_user["branch_id"] if current_user["role"] == "branch_manager" else branch_id or 0,
+        f"{status}:{filter_type}:{destination_branch_id}:{limit}:{id}:{sender}:{receiver}:{date}"
+    )
+    
+    # Try to get from cache
+    cached_result = cache.get(cache_key)
+    if cached_result:
+        return cached_result
+
     SendingBranch = aliased(Branch)
     DestinationBranch = aliased(Branch)
     query = db.query(
@@ -1257,6 +1296,7 @@ def get_transactions(
     ).outerjoin(
         DestinationBranch, Transaction.destination_branch_id == DestinationBranch.id
     )
+
     # Base security filtering
     if current_user["role"] == "employee":
         query = query.filter(
@@ -1268,6 +1308,8 @@ def get_transactions(
             (Transaction.branch_id == current_user["branch_id"]) | 
             (Transaction.destination_branch_id == current_user["branch_id"])
         )
+
+    # Apply filters
     if branch_id:
         query = query.filter(Transaction.branch_id == branch_id)
     if destination_branch_id:
@@ -1282,6 +1324,8 @@ def get_transactions(
         query = query.filter(Transaction.status == status)
     if date:
         query = query.filter(Transaction.date.ilike(f"%{date}%"))
+
+    # Apply type filter if specified
     if filter_type:
         branch = db.query(Branch).filter(Branch.id == current_user["branch_id"]).first()
         if branch:
@@ -1294,9 +1338,12 @@ def get_transactions(
                     (Transaction.sender_governorate == branch.governorate) | 
                     (Transaction.receiver_governorate == branch.governorate)
                 )
+
+    # Apply sorting and limit
     query = query.order_by(Transaction.date.desc())
     if limit:
         query = query.limit(limit)
+
     try:
         results = query.all()
         transaction_list = []
@@ -1334,7 +1381,14 @@ def get_transactions(
                 "destination_branch_name": destination_branch_name
             }
             transaction_list.append(transaction_dict)
-        return {"transactions": transaction_list}
+
+        result = {"transactions": transaction_list}
+        
+        # Cache the result
+        cache.set(cache_key, result, expire=60)
+        
+        return result
+
     except sqlalchemy.exc.SQLAlchemyError as e:
         raise HTTPException(
             status_code=500,
@@ -1717,6 +1771,13 @@ def update_transaction_status(
 
         try:
             db.commit()
+            # Invalidate relevant caches
+            cache.clear_pattern(f"branch_transactions:{branch_id}:*")
+            cache.clear_pattern(f"branch_transactions:{dest_branch_id}:*")
+            cache.delete(get_branch_cache_key(branch_id))
+            cache.delete(get_branch_cache_key(dest_branch_id))
+            cache.delete(get_transaction_cache_key(status_update.transaction_id))
+            
             return {"status": "success", "message": "Status updated with fund adjustment"}
         except Exception as e:
             db.rollback()
@@ -2694,4 +2755,36 @@ async def get_branch_profits_statistics(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error retrieving branch statistics: {str(e)}"
         )
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    import logging
+    logger = logging.getLogger("uvicorn.error")
+    logger.error(f"Unhandled error: {exc}\n{traceback.format_exc()}")
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": "حدث خطأ غير متوقع في الخادم. الرجاء المحاولة لاحقاً.",
+            "error_type": str(type(exc).__name__),
+        },
+    )
+
+@app.exception_handler(FastAPIRequestValidationError)
+async def validation_exception_handler(request: Request, exc: FastAPIRequestValidationError):
+    return JSONResponse(
+        status_code=422,
+        content={
+            "detail": "المدخلات غير صحيحة. الرجاء التحقق من البيانات المدخلة.",
+            "errors": exc.errors(),
+        },
+    )
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "detail": exc.detail,
+        },
+    )
 

@@ -1,8 +1,9 @@
 import os
-
+# http://localhost:8000
+# https://payment-system-y2x3.onrender.com
 # Default configuration
 DEFAULT_CONFIG = {
-    "API_URL": "https://payment-system-y2x3.onrender.com",
+    "API_URL": "http://localhost:8000",
 }
 
 def setup_environment():

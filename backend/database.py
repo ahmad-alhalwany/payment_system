@@ -5,7 +5,11 @@ from sqlalchemy import text
 
 # SQLAlchemy setup
 engine = create_engine(
-    "postgresql+psycopg2://postgres:postgres@localhost/postgres"
+    "postgresql+psycopg2://postgres:postgres@localhost/postgres",
+    pool_size=10,
+    max_overflow=20,
+    pool_timeout=30,
+    pool_recycle=1800
 )
 # engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autoflush=False, bind=engine)
