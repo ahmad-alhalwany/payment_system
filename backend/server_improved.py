@@ -1,10 +1,26 @@
 import logging
+from logging.handlers import RotatingFileHandler
+import os
+
+# Logging setup
+log_dir = os.path.dirname(os.path.abspath(__file__))
+log_file = os.path.join(log_dir, 'app.log')
+handler = RotatingFileHandler(log_file, maxBytes=2*1024*1024, backupCount=5, encoding='utf-8')
+formatter = logging.Formatter('[%(asctime)s] %(levelname)s in %(module)s: %(message)s')
+handler.setFormatter(formatter)
+
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.INFO)
+if not root_logger.hasHandlers():
+    root_logger.addHandler(handler)
+
 logger = logging.getLogger(__name__)
+
 from fastapi import FastAPI, HTTPException, Depends, status, Request
 from sqlalchemy import create_engine, func, and_, or_, desc
 from sqlalchemy.orm import sessionmaker, Session, joinedload, aliased
 from models import User, Branch, Base, BranchFund, Notification, Transaction, BranchProfits
-from pydantic import BaseModel, validator, ValidationError
+from pydantic import BaseModel, field_validator, ValidationError
 import uuid
 from datetime import datetime, timedelta
 from security import hash_password, verify_password, create_jwt_token, SECRET_KEY, ALGORITHM
@@ -93,6 +109,37 @@ class TransactionSchema(BaseModel):
     destination_branch_id: int
     branch_id: Optional[int] = None
     date: Optional[str] = None  # <-- Add date field as string (ISO format)
+
+    @field_validator('amount')
+    def amount_must_be_positive(cls, v):
+        if v <= 0:
+            raise ValueError('المبلغ يجب أن يكون أكبر من صفر')
+        return v
+
+    @field_validator('base_amount', 'benefited_amount')
+    def amounts_non_negative(cls, v, info):
+        if v < 0:
+            raise ValueError(f"{info.field_name} لا يمكن أن يكون سالباً")
+        return v
+
+    @field_validator('tax_rate')
+    def tax_rate_valid(cls, v):
+        if not (0 <= v <= 100):
+            raise ValueError('نسبة الضريبة يجب أن تكون بين 0 و 100')
+        return v
+
+    @field_validator('sender_mobile', 'receiver_mobile')
+    def mobile_valid(cls, v, info):
+        if not v.isdigit() or not (9 <= len(v) <= 10):
+            raise ValueError(f"رقم الجوال {info.field_name} غير صحيح")
+        return v
+
+    @field_validator('currency')
+    def currency_valid(cls, v):
+        allowed = ["SYP", "USD", "ليرة سورية"]
+        if v not in allowed:
+            raise ValueError(f"العملة غير مدعومة. استخدم: {', '.join(allowed)}")
+        return v
 
 class TransactionReceived(BaseModel):
     transaction_id: str
@@ -2289,7 +2336,7 @@ def get_report(
 class TaxRateUpdate(BaseModel):
     tax_rate: float
 
-    @validator('tax_rate')
+    @field_validator('tax_rate')
     def validate_tax_rate(cls, v):
         if v < 0 or v > 100:
             raise ValueError('Tax rate must be between 0 and 100')
