@@ -1320,19 +1320,12 @@ def get_transactions(
     sender: Optional[str] = None,
     receiver: Optional[str] = None,
     status: Optional[str] = None,
-    date: Optional[str] = None
+    date: Optional[str] = None,
+    page: int = 1,
+    per_page: int = 20
 ):
-    # Generate cache key based on parameters
-    cache_key = get_branch_transactions_cache_key(
-        current_user["branch_id"] if current_user["role"] == "branch_manager" else branch_id or 0,
-        f"{status}:{filter_type}:{destination_branch_id}:{limit}:{id}:{sender}:{receiver}:{date}"
-    )
-    
-    # Try to get from cache
-    cached_result = cache.get(cache_key)
-    if cached_result:
-        return cached_result
-
+    # Generate cache key based on parameters (ignore for paginated for now)
+    # ... existing code ...
     SendingBranch = aliased(Branch)
     DestinationBranch = aliased(Branch)
     query = db.query(
@@ -1387,10 +1380,12 @@ def get_transactions(
                     (Transaction.receiver_governorate == branch.governorate)
                 )
 
-    # Apply sorting and limit
+    # Count total before pagination
+    total = query.count()
+
+    # Apply sorting and pagination
     query = query.order_by(Transaction.date.desc())
-    if limit:
-        query = query.limit(limit)
+    query = query.offset((page - 1) * per_page).limit(per_page)
 
     try:
         results = query.all()
@@ -1430,12 +1425,13 @@ def get_transactions(
             }
             transaction_list.append(transaction_dict)
 
-        result = {"transactions": transaction_list}
-        
-        # Cache the result
-        cache.set(cache_key, result, expire=60)
-        
-        return result
+        return {
+            "items": transaction_list,
+            "total": total,
+            "page": page,
+            "per_page": per_page,
+            "total_pages": (total + per_page - 1) // per_page
+        }
 
     except sqlalchemy.exc.SQLAlchemyError as e:
         raise HTTPException(

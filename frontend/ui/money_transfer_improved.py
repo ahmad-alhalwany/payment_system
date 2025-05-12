@@ -328,10 +328,14 @@ class MoneyTransferApp(QMainWindow, ReceiptPrinter, TransferCore, MenuAuthMixin)
         self.username = username
         self.full_name = full_name if full_name else username
         self.api_url = os.environ["API_URL"]
+        # تعريف متغيرات الصفحات في البداية
+        self.current_page_outgoing = 1
+        self.total_pages_outgoing = 1
         self.per_page_outgoing = 18
+        self.current_page_incoming = 1
+        self.total_pages_incoming = 1
         self.per_page_incoming = 18
         self.current_zoom = 100
-        
         # Initialize search manager
         self.search_manager = SearchManager()
         
@@ -353,15 +357,6 @@ class MoneyTransferApp(QMainWindow, ReceiptPrinter, TransferCore, MenuAuthMixin)
         self.load_branches()
         self.load_transactions()
         self.load_received_transactions()
-        
-        # Pagination variables
-        self.current_page_outgoing = 1
-        self.total_pages_outgoing = 1
-        self.per_page_outgoing = 18
-        
-        self.current_page_incoming = 1
-        self.total_pages_incoming = 1
-        self.per_page_incoming = 18
         
         # Connect signals for automatic updates
         self.outgoingTransactionsUpdated.connect(self.update_outgoing_transactions)
@@ -550,31 +545,28 @@ class MoneyTransferApp(QMainWindow, ReceiptPrinter, TransferCore, MenuAuthMixin)
         self.receive_money_tab.setLayout(layout)
         
     def load_received_transactions(self):
-        """Load received transactions for the current branch."""
+        """Load received transactions for the current branch with pagination support."""
         try:
             self.receive_status_label.setText("جاري تحميل بيانات التحويلات الواردة...")
             headers = {"Authorization": f"Bearer {self.user_token}"} if self.user_token else {}
-            
-            # Get transactions where destination branch is current branch
-            response = requests.get(
-                f"{self.api_url}/transactions/?destination_branch_id={self.branch_id}",
-                headers=headers
-            )
-            
+
+            # إعداد رابط الطلب مع بارامتر الصفحة وعدد النتائج في كل صفحة
+            url = f"{self.api_url}/transactions/?destination_branch_id={self.branch_id}&page={self.current_page_incoming}&per_page={self.per_page_incoming}"
+
+            response = requests.get(url, headers=headers)
             if response.status_code == 200:
                 transactions_data = response.json()
-                transactions = transactions_data.get("transactions", [])
-                
-                # Reset pagination
-                self.current_page_incoming = 1
-                
+                transactions = transactions_data.get("items", [])
+                self.total_pages_incoming = transactions_data.get("total_pages", 1)
+                self.current_page_incoming = transactions_data.get("page", 1)
+                self.receive_count_label.setText(
+                    f"عدد التحويلات: {transactions_data.get('total', len(transactions))} "
+                    f"(الصفحة {self.current_page_incoming}/{self.total_pages_incoming})"
+                )
                 # Store transactions for filtering
                 self.all_received_transactions = transactions
-                
                 # Emit signal to update UI
                 self.incomingTransactionsUpdated.emit(transactions)
-                
-                # Update status
                 self.receive_status_label.setText("تم تحميل بيانات التحويلات الواردة بنجاح")
             else:
                 self.receive_status_label.setText(f"خطأ في تحميل بيانات التحويلات المستلمة: {response.status_code}")
@@ -584,7 +576,17 @@ class MoneyTransferApp(QMainWindow, ReceiptPrinter, TransferCore, MenuAuthMixin)
             print(f"Error loading received transactions: {e}")
             QMessageBox.critical(self, "خطأ في الاتصال", 
                             "تعذر الاتصال بالخادم. الرجاء التحقق من اتصالك بالإنترنت وحالة الخادم.")
-            
+
+    def next_page_incoming(self):
+        if self.current_page_incoming < self.total_pages_incoming:
+            self.current_page_incoming += 1
+            self.load_received_transactions()
+
+    def prev_page_incoming(self):
+        if self.current_page_incoming > 1:
+            self.current_page_incoming -= 1
+            self.load_received_transactions()
+
     def filter_received_transactions(self):
         """Filter received transactions based on selected status."""
         if not hasattr(self, 'all_received_transactions'):
@@ -684,15 +686,15 @@ class MoneyTransferApp(QMainWindow, ReceiptPrinter, TransferCore, MenuAuthMixin)
         self.prev_button_outgoing.setEnabled(self.current_page_outgoing > 1)
         self.next_button_outgoing.setEnabled(self.current_page_outgoing < self.total_pages_outgoing)
 
-    def prev_page_outgoing(self):
-        if self.current_page_outgoing > 1:
-            self.current_page_outgoing -= 1
-            self.filter_transactions()
-
     def next_page_outgoing(self):
         if self.current_page_outgoing < self.total_pages_outgoing:
             self.current_page_outgoing += 1
-            self.filter_transactions()
+            self.load_transactions()
+
+    def prev_page_outgoing(self):
+        if self.current_page_outgoing > 1:
+            self.current_page_outgoing -= 1
+            self.load_transactions()
 
     # Incoming pagination controls
     def update_pagination_controls_incoming(self):
@@ -705,12 +707,12 @@ class MoneyTransferApp(QMainWindow, ReceiptPrinter, TransferCore, MenuAuthMixin)
     def prev_page_incoming(self):
         if self.current_page_incoming > 1:
             self.current_page_incoming -= 1
-            self.filter_received_transactions()
+            self.load_received_transactions()
 
     def next_page_incoming(self):
         if self.current_page_incoming < self.total_pages_incoming:
             self.current_page_incoming += 1
-            self.filter_received_transactions()     
+            self.load_received_transactions()     
         
     # Add new helper method for incoming type indicator
     def create_incoming_type_item(self, transaction):
@@ -1248,39 +1250,35 @@ class MoneyTransferApp(QMainWindow, ReceiptPrinter, TransferCore, MenuAuthMixin)
             self.branch_input.setEnabled(True)       
     
     def load_transactions(self):
-        """Load transactions from the API."""
+        """Load transactions from the API with pagination support."""
         try:
             self.status_label.setText("جاري تحميل بيانات التحويلات...")
             headers = {"Authorization": f"Bearer {self.user_token}"} if self.user_token else {}
-            
-            url = f"{self.api_url}/transactions/"
-            
-            # For employees, add employee filter
+
+            # إعداد رابط الطلب مع بارامتر الصفحة وعدد النتائج في كل صفحة
+            url = f"{self.api_url}/transactions/?page={self.current_page_outgoing}&per_page={self.per_page_outgoing}"
             if self.user_role == "employee":
-                url += f"?branch_id={self.branch_id}&employee_id={self.user_id}"
+                url += f"&branch_id={self.branch_id}&employee_id={self.user_id}"
             else:
                 if self.branch_id:
-                    url += f"?branch_id={self.branch_id}"
+                    url += f"&branch_id={self.branch_id}"
 
             response = requests.get(url, headers=headers)
-            
             if response.status_code == 200:
                 transactions_data = response.json()
-                transactions = transactions_data.get("transactions", [])
-                
+                transactions = transactions_data.get("items", [])
+                self.total_pages_outgoing = transactions_data.get("total_pages", 1)
+                self.current_page_outgoing = transactions_data.get("page", 1)
+                self.count_label.setText(
+                    f"عدد التحويلات: {transactions_data.get('total', len(transactions))} "
+                    f"(الصفحة {self.current_page_outgoing}/{self.total_pages_outgoing})"
+                )
                 # Store transactions for filtering
                 self.all_transactions = transactions
-                
                 # Update search manager cache
                 self.search_manager.update_cache(transactions)
-                
-                # Reset pagination
-                self.current_page_outgoing = 1
-                
                 # Emit signal to update UI
                 self.outgoingTransactionsUpdated.emit(transactions)
-                
-                # Update status
                 self.status_label.setText("تم تحميل بيانات التحويلات الصادرة بنجاح")
             else:
                 self.status_label.setText(f"خطأ في تحميل بيانات التحويلات: {response.status_code}")
@@ -1290,7 +1288,7 @@ class MoneyTransferApp(QMainWindow, ReceiptPrinter, TransferCore, MenuAuthMixin)
             print(f"Error loading transactions: {e}")
             QMessageBox.critical(self, "خطأ في الاتصال", 
                             "تعذر الاتصال بالخادم. الرجاء التحقق من اتصالك بالإنترنت وحالة الخادم.")
-            
+    
     def filter_transactions(self):
         """Filter transactions based on selected status."""
         if not hasattr(self, 'all_transactions'):
