@@ -1202,28 +1202,36 @@ def get_branch(branch_id: int, db: Session = Depends(get_db), current_user: dict
     return result
 
 @app.get("/users/")
-def get_users(db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
-    # Only directors and branch managers can view users
+def get_users(
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+    branch_id: Optional[int] = None,  # إضافة بارامتر branch_id
+    page: int = 1,
+    per_page: int = 20
+):
+    # التحقق من الصلاحيات
     if current_user["role"] not in ["director", "branch_manager"]:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not enough permissions")
-    
     query = db.query(User)
-    
-    # Branch managers can only see users in their branch
+    # إذا كان المستخدم مدير فرع، قصر النتائج على فرعه
     if current_user["role"] == "branch_manager":
         query = query.filter(User.branch_id == current_user["branch_id"])
-    
+    # تطبيق تصفية branch_id إذا تم تقديمه
+    if branch_id:
+        # المديرين الفرعيين لا يمكنهم طلب فروع أخرى
+        if current_user["role"] == "branch_manager" and branch_id != current_user["branch_id"]:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You can only view your branch's employees")
+        query = query.filter(User.branch_id == branch_id)
+    total = query.count()
+    query = query.order_by(User.created_at.desc())
+    query = query.offset((page - 1) * per_page).limit(per_page)
     users = query.all()
-    
-    # Get branch names for each user
     user_list = []
     for user in users:
         branch_name = None
         if user.branch_id:
             branch = db.query(Branch).filter(Branch.id == user.branch_id).first()
-            if branch:
-                branch_name = branch.name
-        
+            branch_name = branch.name if branch else None
         user_list.append({
             "id": user.id,
             "username": user.username,
@@ -1232,8 +1240,13 @@ def get_users(db: Session = Depends(get_db), current_user: dict = Depends(get_cu
             "branch_name": branch_name,
             "created_at": user.created_at.strftime("%Y-%m-%d %H:%M:%S") if user.created_at else None
         })
-    
-    return {"users": user_list}
+    return {
+        "items": user_list,
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+        "total_pages": (total + per_page - 1) // per_page
+    }
 
 @app.get("/employees/")
 def get_employees(db: Session = Depends(get_db), current_user: dict = Depends(get_current_user), branch_id: Optional[int] = None):
@@ -2155,49 +2168,6 @@ def get_transaction(transaction_id: str, db: Session = Depends(get_db), current_
     }
     
     return transaction_dict
-
-@app.get("/users/")
-def get_users(
-    db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
-    branch_id: Optional[int] = None  # إضافة بارامتر branch_id
-):
-    # التحقق من الصلاحيات
-    if current_user["role"] not in ["director", "branch_manager"]:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not enough permissions")
-    
-    query = db.query(User)
-    
-    # إذا كان المستخدم مدير فرع، قصر النتائج على فرعه
-    if current_user["role"] == "branch_manager":
-        query = query.filter(User.branch_id == current_user["branch_id"])
-    
-    # تطبيق تصفية branch_id إذا تم تقديمه
-    if branch_id:
-        # المديرين الفرعيين لا يمكنهم طلب فروع أخرى
-        if current_user["role"] == "branch_manager" and branch_id != current_user["branch_id"]:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You can only view your branch's employees")
-        query = query.filter(User.branch_id == branch_id)
-    
-    # جلب المستخدمين مع أسماء الفروع
-    users = query.all()
-    user_list = []
-    for user in users:
-        branch_name = None
-        if user.branch_id:
-            branch = db.query(Branch).filter(Branch.id == user.branch_id).first()
-            branch_name = branch.name if branch else None
-        
-        user_list.append({
-            "id": user.id,
-            "username": user.username,
-            "role": user.role,
-            "branch_id": user.branch_id,
-            "branch_name": branch_name,
-            "created_at": user.created_at.strftime("%Y-%m-%d %H:%M:%S") if user.created_at else None
-        })
-    
-    return {"users": user_list}
 
 @app.get("/notifications/")
 def get_notifications(db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):

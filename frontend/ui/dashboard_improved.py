@@ -781,8 +781,8 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
             print(f"Error updating activity list: {e}")
             self.statusBar().showMessage("خطأ في تحديث قائمة النشاطات", 5000)
 
-    def setup_employees_tab(self):
-        """Set up the employees tab with proper filtering controls."""
+    def setup_employees_tab_ui(self):
+        """Set up the employees tab UI without loading data"""
         layout = QVBoxLayout()
         
         # Title
@@ -800,7 +800,6 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
         branch_label = QLabel("الفرع:")
         self.branch_filter = QComboBox()
         self.branch_filter.setMinimumWidth(250)
-        self.load_branches_for_filter()
         self.branch_filter.currentIndexChanged.connect(self.filter_employees)
         
         # Search field
@@ -832,6 +831,26 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
         
         layout.addWidget(self.employees_table)
         
+        # Add pagination controls
+        pagination_layout = QHBoxLayout()
+        
+        # Previous page button
+        self.prev_page_btn = ModernButton("السابق", color="#3498db")
+        self.prev_page_btn.clicked.connect(self.prev_page)
+        pagination_layout.addWidget(self.prev_page_btn)
+        
+        # Page info label
+        self.page_info_label = QLabel("الصفحة 1 من 1")
+        self.page_info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        pagination_layout.addWidget(self.page_info_label)
+        
+        # Next page button
+        self.next_page_btn = ModernButton("التالي", color="#3498db")
+        self.next_page_btn.clicked.connect(self.next_page)
+        pagination_layout.addWidget(self.next_page_btn)
+        
+        layout.addLayout(pagination_layout)
+        
         # Buttons
         buttons_layout = QHBoxLayout()
         
@@ -857,12 +876,41 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
         
         layout.addLayout(buttons_layout)
         
-        self.employee_search.textChanged.connect(self.filter_employees)
-        
         self.employees_tab.setLayout(layout)
-        
-        self.load_employees()  # Initial load
-    
+
+    def load_employee_stats(self):
+        """Load employee statistics with pagination support"""
+        try:
+            headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
+            # Get total stats without pagination
+            response = requests.get(f"{self.api_url}/users/stats/", headers=headers)
+            if response.status_code == 200:
+                stats = response.json()
+                self._update_cache('users', stats)
+                # Update employee count if needed
+                if hasattr(self, 'employees_count'):
+                    self.employees_count.setText(str(stats.get("total", 0)))
+        except Exception as e:
+            print(f"Error loading employee stats: {e}")
+
+    def filter_employees(self):
+        """Filter employees with pagination support"""
+        try:
+            # Reset to first page when filtering
+            self._current_page = 1
+            branch_id = self.branch_filter.currentData()
+            self.load_employees(branch_id=branch_id, page=1)
+        except Exception as e:
+            print(f"Error filtering employees: {e}")
+
+    def refresh_employees(self):
+        """Refresh employees list with current filters"""
+        try:
+            branch_id = self.branch_filter.currentData()
+            self.load_employees(branch_id=branch_id, page=self._current_page)
+        except Exception as e:
+            print(f"Error refreshing employees: {e}")
+
     def setup_transactions_tab(self):
         """Set up the transactions tab."""
         layout = QVBoxLayout()
@@ -1788,83 +1836,6 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
         self.settings_tab = QWidget()
         self.setup_settings_tab()
         self.tabs.addTab(self.settings_tab, "الإعدادات")
-
-    def setup_employees_tab_ui(self):
-        """Set up the employees tab UI without loading data"""
-        layout = QVBoxLayout()
-        
-        # Title
-        title = QLabel("إدارة الموظفين")
-        title.setFont(QFont("Arial", 18, QFont.Weight.Bold))
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title.setStyleSheet("color: #2c3e50; margin-bottom: 20px;")
-        layout.addWidget(title)
-        
-        # Filter controls
-        filter_group = ModernGroupBox("تصفية الموظفين", "#3498db")
-        filter_layout = QGridLayout()
-        
-        # Branch filter
-        branch_label = QLabel("الفرع:")
-        self.branch_filter = QComboBox()
-        self.branch_filter.setMinimumWidth(250)
-        self.branch_filter.currentIndexChanged.connect(self.filter_employees)
-        
-        # Search field
-        search_label = QLabel("بحث:")
-        self.employee_search = QLineEdit()
-        self.employee_search.setPlaceholderText("ابحث باسم الموظف أو المعرف")
-        self.employee_search.textChanged.connect(self.filter_employees)
-        
-        # Add widgets to filter layout
-        filter_layout.addWidget(branch_label, 0, 0)
-        filter_layout.addWidget(self.branch_filter, 0, 1)
-        filter_layout.addWidget(search_label, 1, 0)
-        filter_layout.addWidget(self.employee_search, 1, 1)
-        
-        filter_group.setLayout(filter_layout)
-        layout.addWidget(filter_group)
-        
-        # Employees table
-        self.employees_table = QTableWidget()
-        manager = self._get_table_manager(self.employees_table)
-        self.employees_table.setColumnCount(5)
-        self.employees_table.setHorizontalHeaderLabels([
-            "اسم المستخدم", "الدور", "الفرع", "تاريخ الإنشاء", "الحالة"
-        ])
-        self.employees_table.horizontalHeader().setStretchLastSection(True)
-        self.employees_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.employees_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.employees_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        
-        layout.addWidget(self.employees_table)
-        
-        # Buttons
-        buttons_layout = QHBoxLayout()
-        
-        add_employee_button = ModernButton("إضافة موظف", color="#2ecc71")
-        add_employee_button.clicked.connect(self.add_employee)
-        buttons_layout.addWidget(add_employee_button)
-        
-        edit_employee_button = ModernButton("تعديل الموظف", color="#3498db")
-        edit_employee_button.clicked.connect(self.edit_employee)
-        buttons_layout.addWidget(edit_employee_button)
-        
-        delete_employee_button = ModernButton("حذف الموظف", color="#e74c3c")
-        delete_employee_button.clicked.connect(self.delete_employee)
-        buttons_layout.addWidget(delete_employee_button)
-        
-        reset_password_button = ModernButton("إعادة تعيين كلمة المرور", color="#f39c12")
-        reset_password_button.clicked.connect(self.reset_password)
-        buttons_layout.addWidget(reset_password_button)
-        
-        refresh_button = ModernButton("تحديث", color="#9b59b6")
-        refresh_button.clicked.connect(self.refresh_employees)
-        buttons_layout.addWidget(refresh_button)
-        
-        layout.addLayout(buttons_layout)
-        
-        self.employees_tab.setLayout(layout)
 
     def setup_reports_tab_ui(self):
         """Set up the reports tab UI without loading data"""

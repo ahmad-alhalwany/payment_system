@@ -14,15 +14,17 @@ from functools import lru_cache
 
 class EmployeeLoadWorker(QThread):
     """Worker thread for loading employee data"""
-    data_loaded = pyqtSignal(list)
+    data_loaded = pyqtSignal(dict)  # Changed to emit dict with pagination info
     error_occurred = pyqtSignal(str)
     progress_updated = pyqtSignal(str)
     
-    def __init__(self, api_url: str, token: str, branch_id: Optional[int] = None):
+    def __init__(self, api_url: str, token: str, branch_id: Optional[int] = None, page: int = 1, per_page: int = 20):
         super().__init__()
         self.api_url = api_url
         self.token = token
         self.branch_id = branch_id
+        self.page = page
+        self.per_page = per_page
         self._is_cancelled = False
         
     def run(self):
@@ -30,9 +32,10 @@ class EmployeeLoadWorker(QThread):
             self.progress_updated.emit("جاري تحميل بيانات الموظفين...")
             headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
             
-            url = f"{self.api_url}/users/"
+            # Build URL with pagination parameters
+            url = f"{self.api_url}/users/?page={self.page}&per_page={self.per_page}"
             if self.branch_id:
-                url += f"?branch_id={self.branch_id}"
+                url += f"&branch_id={self.branch_id}"
                 
             response = requests.get(url, headers=headers, timeout=30)
             
@@ -41,8 +44,8 @@ class EmployeeLoadWorker(QThread):
                 
             if response.status_code == 200:
                 data = response.json()
-                employees = data.get("users", [])
-                self.data_loaded.emit(employees)
+                # Now data contains items, total, page, per_page, and total_pages
+                self.data_loaded.emit(data)
             else:
                 self.error_occurred.emit(f"فشل تحميل البيانات: {response.status_code}")
                 
@@ -102,6 +105,12 @@ class EmployeeManagementMixin:
         self._loading_widget = None
         self._table_manager = None
         
+        # Pagination state
+        self._current_page = 1
+        self._per_page = 20
+        self._total_pages = 1
+        self._total_items = 0
+        
         # Initialize update timer
         self._update_timer = QTimer()
         self._update_timer.timeout.connect(self._process_updates)
@@ -160,29 +169,32 @@ class EmployeeManagementMixin:
             print(f"Error loading branches: {e}")
             self.branch_id_to_name = {}
 
-    def load_employees(self, branch_id: Optional[int] = None):
-        """Load employees data with improved performance"""
+    def load_employees(self, branch_id: Optional[int] = None, page: Optional[int] = None):
+        """Load employees data with improved performance and pagination support"""
         try:
+            # Update page if provided
+            if page is not None:
+                self._current_page = page
+                
             # Ensure branches are loaded first
             self._load_branches_for_employees()
+            
             # Cancel any existing worker
             if self._current_worker and self._current_worker.isRunning():
                 self._current_worker.cancel()
                 self._current_worker.wait()
             
-            # Check cache first
-            cache_key = f"employees_{branch_id if branch_id else 'all'}"
-            cached_data = self._employee_cache.get(cache_key)
-            
-            if cached_data:
-                self._update_employees_table(cached_data)
-                return
-            
             # Show loading indicator
             self._show_loading("جاري تحميل بيانات الموظفين...")
             
-            # Create and start worker
-            self._current_worker = EmployeeLoadWorker(self.api_url, self.token, branch_id)
+            # Create and start worker with pagination
+            self._current_worker = EmployeeLoadWorker(
+                self.api_url, 
+                self.token, 
+                branch_id,
+                self._current_page,
+                self._per_page
+            )
             self._current_worker.data_loaded.connect(self._handle_employee_data)
             self._current_worker.error_occurred.connect(self._handle_employee_error)
             self._current_worker.progress_updated.connect(self._update_loading_message)
@@ -193,15 +205,22 @@ class EmployeeManagementMixin:
             self._hide_loading()
             QMessageBox.warning(self, "خطأ", f"تعذر تحميل الموظفين: {str(e)}")
 
-    def _handle_employee_data(self, employees: List[Dict]):
-        """Handle loaded employee data"""
+    def _handle_employee_data(self, data: dict):
+        """Handle loaded employee data with pagination info"""
         try:
-            # Cache the data
-            cache_key = "employees_all"
-            self._employee_cache.set(cache_key, employees)
+            # Extract pagination info
+            self._total_items = data.get("total", 0)
+            self._total_pages = data.get("total_pages", 1)
+            self._current_page = data.get("page", 1)
+            
+            # Get items
+            employees = data.get("items", [])
             
             # Update table
             self._update_employees_table(employees)
+            
+            # Update pagination controls
+            self._update_pagination_controls()
             
         except Exception as e:
             QMessageBox.warning(self, "خطأ", f"خطأ في معالجة البيانات: {str(e)}")
@@ -444,4 +463,28 @@ class EmployeeManagementMixin:
                 self._table_manager.cleanup()
             
         except Exception as e:
-            print(f"Error during cleanup: {e}")                                                
+            print(f"Error during cleanup: {e}")
+
+    def _update_pagination_controls(self):
+        """Update pagination controls visibility and state"""
+        if hasattr(self, 'prev_page_btn') and hasattr(self, 'next_page_btn'):
+            # Update button states
+            self.prev_page_btn.setEnabled(self._current_page > 1)
+            self.next_page_btn.setEnabled(self._current_page < self._total_pages)
+            
+            # Update page info label if it exists
+            if hasattr(self, 'page_info_label'):
+                self.page_info_label.setText(
+                    f"الصفحة {self._current_page} من {self._total_pages} "
+                    f"(إجمالي {self._total_items} موظف)"
+                )
+
+    def prev_page(self):
+        """Load previous page of employees"""
+        if self._current_page > 1:
+            self.load_employees(page=self._current_page - 1)
+
+    def next_page(self):
+        """Load next page of employees"""
+        if self._current_page < self._total_pages:
+            self.load_employees(page=self._current_page + 1)                                                
