@@ -325,6 +325,11 @@ class EmployeeManagementMixin:
         if not employee_data:
             return
             
+        # منع تعديل مدير النظام
+        if employee_data.get("role") == "director":
+            QMessageBox.warning(self, "تنبيه", "لا يمكن تعديل بيانات مدير النظام")
+            return
+            
         from ui.user_management_improved import EditEmployeeDialog
         dialog = EditEmployeeDialog(employee_data, self.token, self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
@@ -336,6 +341,11 @@ class EmployeeManagementMixin:
         """Delete employee with improved error handling"""
         employee_data = self._get_selected_employee()
         if not employee_data:
+            return
+            
+        # منع حذف مدير النظام
+        if employee_data.get("role") == "director":
+            QMessageBox.warning(self, "تنبيه", "لا يمكن حذف مدير النظام")
             return
             
         employee_id = employee_data.get("id")
@@ -371,6 +381,12 @@ class EmployeeManagementMixin:
             if not isinstance(employee_data, dict) or "id" not in employee_data:
                 QMessageBox.warning(self, "خطأ", "بيانات الموظف غير صالحة")
                 return None
+                
+            # تحديث حالة الأزرار بناءً على دور الموظف
+            if hasattr(self, 'edit_employee_btn') and hasattr(self, 'delete_employee_btn'):
+                is_director = employee_data.get("role") == "director"
+                self.edit_employee_btn.setEnabled(not is_director)
+                self.delete_employee_btn.setEnabled(not is_director)
                 
             return employee_data
             
