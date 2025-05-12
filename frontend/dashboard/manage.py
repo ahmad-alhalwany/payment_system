@@ -117,15 +117,16 @@ class DashboardCacheManager:
             if self.cache_size + size_estimate > self.MAX_CACHE_SIZE:
                 if self.cache_size + size_estimate > self.MAX_CACHE_SIZE * self.CRITICAL_THRESHOLD:
                     # Critical threshold reached - force cleanup
+                    print(f"[Cache] CRITICAL threshold reached. Forcing cleanup. Current size: {self.cache_size}")
                     self.force_cleanup(size_estimate)
                 elif self.cache_size + size_estimate > self.MAX_CACHE_SIZE * self.WARNING_THRESHOLD:
                     # Warning threshold reached - try cleanup
+                    print(f"[Cache] WARNING threshold reached. Trying cleanup. Current size: {self.cache_size}")
                     self.cleanup_expired()
-                    
             # If still not enough space, evict items
             if self.cache_size + size_estimate > self.MAX_CACHE_SIZE:
+                print(f"[Cache] Not enough space after cleanup. Evicting least used. Current size: {self.cache_size}")
                 self.evict_least_used(size_estimate)
-            
             # Store with metadata
             self.cache[key] = {
                 'data': data,
@@ -135,8 +136,8 @@ class DashboardCacheManager:
                 'level': level,
                 'last_access': time.time()
             }
-            
             self.cache_size += size_estimate
+            print(f"[Cache] SET key: {key}, size: {size_estimate}, total: {self.cache_size}, items: {len(self.cache)}")
             return True
 
     def remove(self, key: str) -> None:
@@ -148,6 +149,7 @@ class DashboardCacheManager:
                 del self.cache[key]
                 if key in self.access_patterns:
                     del self.access_patterns[key]
+                print(f"[Cache] REMOVE key: {key}, total: {self.cache_size}, items: {len(self.cache)}")
 
     def clear(self, key: str = None) -> None:
         """Clear specific or all cache entries"""
@@ -159,35 +161,33 @@ class DashboardCacheManager:
                 self.access_patterns.clear()
                 self.cache_size = 0
                 self.reset_metrics()
+                print(f"[Cache] CLEAR ALL. total: {self.cache_size}, items: {len(self.cache)}")
 
     def cleanup_expired(self) -> None:
         """Remove expired entries with smart cleanup"""
         with self._lock:
             current_time = time.time()
             expired_keys = []
-            
             for key, entry in self.cache.items():
                 level = entry.get('level', 'medium')
                 timeout = self.CACHE_LEVELS.get(level, self.CACHE_LEVELS['medium'])
-                
                 # Check both timeout and access patterns
                 if (current_time - entry['timestamp'] > timeout or
                     (current_time - entry.get('last_access', 0) > timeout * 2)):
                     expired_keys.append(key)
-            
             for key in expired_keys:
                 self.remove(key)
-            
             self.last_cleanup = current_time
+            print(f"[Cache] CLEANUP expired. Removed: {len(expired_keys)}, total: {self.cache_size}, items: {len(self.cache)}")
 
     def force_cleanup(self, required_size: int) -> None:
         """Force cleanup to free up required space"""
         with self._lock:
             # First try removing expired items
             self.cleanup_expired()
-            
             # If still need space, remove least accessed items
             if self.cache_size + required_size > self.MAX_CACHE_SIZE:
+                print(f"[Cache] FORCE CLEANUP. Need to free: {required_size}, current: {self.cache_size}")
                 self.evict_least_used(required_size)
 
     def evict_least_used(self, required_size: int) -> None:
@@ -277,6 +277,20 @@ class DashboardCacheManager:
                         current_index = levels.index(current_level)
                         if current_index > 0:  # Can be promoted
                             entry['level'] = levels[current_index - 1]
+
+    def stop_timers(self):
+        """Stop all QTimers used by the cache manager."""
+        if hasattr(self, 'cleanup_timer') and self.cleanup_timer.isActive():
+            self.cleanup_timer.stop()
+            print("[Cache] cleanup_timer stopped.")
+        if hasattr(self, 'metrics_timer') and self.metrics_timer.isActive():
+            self.metrics_timer.stop()
+            print("[Cache] metrics_timer stopped.")
+
+    def show_stats(self):
+        """Print cache statistics to the console."""
+        stats = self.get_metrics()
+        print(f"[Cache] Stats: hit_rate={stats['hit_rate']:.2f}%, hits={stats['hits']}, misses={stats['misses']}, evictions={stats['evictions']}, total_requests={stats['total_requests']}, cache_size_mb={stats['cache_size_mb']:.2f}, usage={stats['cache_usage_percent']:.2f}%, items={stats['items_count']}")
 
 class DataLoadThread(QThread):
     """Thread for loading dashboard data asynchronously with enhanced progress tracking and error handling"""

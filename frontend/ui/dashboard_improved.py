@@ -112,19 +112,28 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
     def setup_timers(self):
         """Setup all timers with proper intervals"""
         # Update timer for periodic data refresh
-        self.update_timer = QTimer(self)
+        if not hasattr(self, 'update_timer'):
+            self.update_timer = QTimer(self)
+            print("[QTimer] Created: update_timer")
         self.update_timer.timeout.connect(self.smart_update)
         self.update_timer.start(300000)  # 5 minutes
+        print("[QTimer] Started: update_timer")
         
         # Time display update timer
-        self.time_timer = QTimer(self)
+        if not hasattr(self, 'time_timer'):
+            self.time_timer = QTimer(self)
+            print("[QTimer] Created: time_timer")
         self.time_timer.timeout.connect(self.update_time)
         self.time_timer.start(60000)  # 1 minute
+        print("[QTimer] Started: time_timer")
         
         # Background tasks timer
-        self.background_timer = QTimer(self)
+        if not hasattr(self, 'background_timer'):
+            self.background_timer = QTimer(self)
+            print("[QTimer] Created: background_timer")
         self.background_timer.timeout.connect(self.process_background_tasks)
         self.background_timer.start(5000)  # 5 seconds
+        print("[QTimer] Started: background_timer")
     
     def setup_ui_with_loading(self):
         """Setup UI with loading indicators for each tab"""
@@ -206,11 +215,17 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
 
     def load_initial_data(self):
         """Load initial dashboard data efficiently"""
-        # Start loading thread for all data
+        # إذا كان هناك خيط تحميل نشط، لا تنشئ واحدًا جديدًا
+        if hasattr(self, 'load_thread') and self.load_thread.isRunning():
+            print("[Thread] Previous load_thread still running, skipping new thread.")
+            return
         self.load_thread = DataLoadThread(self.api_url, self.token, 'all')
+        print(f"[Thread] Created DataLoadThread (all): {id(self.load_thread)}")
         self.load_thread.data_loaded.connect(self.handle_loaded_data)
         self.load_thread.error_occurred.connect(self.handle_load_error)
         self.load_thread.progress_updated.connect(lambda msg: self.statusBar().showMessage(msg))
+        self.load_thread.finished.connect(lambda: self._remove_thread(self.load_thread))
+        self._active_threads.add(self.load_thread)
         self.load_thread.start()
 
     def handle_load_error(self, error_msg):
@@ -230,10 +245,16 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
         elif hasattr(self, 'dashboard_tab') and current_tab == self.dashboard_tab:
             load_type = 'activity'
 
-        # Start loading thread for specific data type
+        # إذا كان هناك خيط تحميل نشط، لا تنشئ واحدًا جديدًا
+        if hasattr(self, 'load_thread') and self.load_thread.isRunning():
+            print("[Thread] Previous load_thread still running, skipping new thread.")
+            return
         self.load_thread = DataLoadThread(self.api_url, self.token, load_type)
+        print(f"[Thread] Created DataLoadThread ({load_type}): {id(self.load_thread)}")
         self.load_thread.data_loaded.connect(self.handle_loaded_data)
         self.load_thread.error_occurred.connect(self.handle_load_error)
+        self.load_thread.finished.connect(lambda: self._remove_thread(self.load_thread))
+        self._active_threads.add(self.load_thread)
         self.load_thread.start()
 
     def refresh_dashboard(self):
@@ -411,11 +432,13 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
             current_time = datetime.now().strftime("%I:%M %p")
             current_date = datetime.now().strftime("%Y/%m/%d")
             time_label.setText(f"{current_time} - {current_date}")
-            
         update_time()
-        self.time_timer = QTimer()
+        if not hasattr(self, 'time_timer'):
+            self.time_timer = QTimer()
+            print("[QTimer] Created: time_timer (dashboard_tab)")
         self.time_timer.timeout.connect(update_time)
         self.time_timer.start(60000)  # Update every minute
+        print("[QTimer] Started: time_timer (dashboard_tab)")
         
         welcome_text = QLabel(f"مرحباً، {self.full_name}")
         welcome_text.setStyleSheet("font-size: 24px; font-weight: bold; color: #2c3e50; margin-bottom: 5px;")
@@ -624,9 +647,12 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
         layout.addLayout(content_layout)
         
         # Set up refresh timer
-        self.refresh_timer = QTimer()
+        if not hasattr(self, 'refresh_timer'):
+            self.refresh_timer = QTimer()
+            print("[QTimer] Created: refresh_timer")
         self.refresh_timer.timeout.connect(self.refresh_dashboard)
         self.refresh_timer.start(30000)  # Refresh every 30 seconds
+        print("[QTimer] Started: refresh_timer")
         
         self.dashboard_tab.setLayout(layout)
         
@@ -730,9 +756,15 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
                 return
 
             # If not in cache, load from server
+            if hasattr(self, 'load_thread') and self.load_thread.isRunning():
+                print("[Thread] Previous load_thread still running, skipping new thread.")
+                return
             self.load_thread = DataLoadThread(self.api_url, self.token, 'activity')
+            print(f"[Thread] Created DataLoadThread (activity): {id(self.load_thread)}")
             self.load_thread.data_loaded.connect(self.handle_loaded_data)
             self.load_thread.error_occurred.connect(self.handle_load_error)
+            self.load_thread.finished.connect(lambda: self._remove_thread(self.load_thread))
+            self._active_threads.add(self.load_thread)
             self.load_thread.start()
             
         except Exception as e:
@@ -1068,22 +1100,27 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
         """Load recent transactions with optimized table updates and caching"""
         try:
             self.statusBar().showMessage("جاري تحميل التحويلات...")
-            
+
             # Check cache first
             cached_transactions = self._get_cached_data('transactions')
             if cached_transactions:
                 self.update_transactions_data({'transactions': cached_transactions})
                 return
-            
+
             # Initialize table update manager if not exists
             if not hasattr(self, 'table_manager'):
                 self.table_manager = TableUpdateManager(self.recent_transactions_table)
-            
-            # Create and start data loading thread
+
+            if hasattr(self, 'load_thread') and self.load_thread.isRunning():
+                print("[Thread] Previous load_thread still running, skipping new thread.")
+                return
             self.load_thread = DataLoadThread(self.api_url, self.token, 'transactions')
+            print(f"[Thread] Created DataLoadThread (transactions): {id(self.load_thread)}")
             self.load_thread.data_loaded.connect(self._handle_transactions_data)
             self.load_thread.error_occurred.connect(lambda msg: self.statusBar().showMessage(msg, 5000))
             self.load_thread.progress_updated.connect(lambda msg: self.statusBar().showMessage(msg))
+            self.load_thread.finished.connect(lambda: self._remove_thread(self.load_thread))
+            self._active_threads.add(self.load_thread)
             self.load_thread.start()
             
         except Exception as e:
@@ -1567,14 +1604,14 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
         """Load branch statistics with optimized loading"""
         try:
             self.statusBar().showMessage("جاري تحميل إحصائيات الفروع...")
-            
+
             # Create and start data loading thread
             load_thread = DataLoadThread(self.api_url, self.token, 'branches')
+            print(f"[Thread] Created DataLoadThread (branches): {id(load_thread)}")
             load_thread.data_loaded.connect(self.update_branch_stats)
             load_thread.error_occurred.connect(lambda msg: self.statusBar().showMessage(msg, 5000))
             load_thread.progress_updated.connect(lambda msg: self.statusBar().showMessage(msg))
-            
-            # Store thread reference to prevent garbage collection
+            load_thread.finished.connect(lambda: self._remove_thread(load_thread))
             self._active_threads.add(load_thread)
             load_thread.start()
             
@@ -1598,13 +1635,21 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
     def closeEvent(self, event):
         """Clean up timers and resources when closing."""
         # Stop all timers
-        if hasattr(self, 'refresh_timer'):
-            self.refresh_timer.stop()
-        if hasattr(self, 'transaction_timer'):
-            self.transaction_timer.stop()
-        if hasattr(self, 'time_timer'):
-            self.time_timer.stop()
-        
+        for timer_name in [
+            'refresh_timer', 'transaction_timer', 'time_timer', 'update_timer',
+            'background_timer', 'basic_refresh_timer', 'tab_refresh_timer']:
+            timer = getattr(self, timer_name, None)
+            if timer is not None:
+                timer.stop()
+                print(f"[QTimer] Stopped: {timer_name}")
+        # Stop all active threads
+        print(f"[Thread] Stopping all active threads: {len(self._active_threads)}")
+        for thread in list(self._active_threads):
+            if thread.isRunning():
+                print(f"[Thread] Stopping thread: {id(thread)}")
+                thread.stop()
+                thread.wait()
+        self._active_threads.clear()
         # Accept the close event
         event.accept()
 
@@ -1893,14 +1938,19 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
     def setup_auto_refresh(self):
         """Setup automatic refresh timers with optimized intervals"""
         # Basic stats refresh every 10 minutes
-        self.basic_refresh_timer = QTimer()
+        if not hasattr(self, 'basic_refresh_timer'):
+            self.basic_refresh_timer = QTimer()
+            print("[QTimer] Created: basic_refresh_timer")
         self.basic_refresh_timer.timeout.connect(self.load_combined_basic_stats)
         self.basic_refresh_timer.start(600000)  # 10 minutes
-        
+        print("[QTimer] Started: basic_refresh_timer")
         # Current tab refresh every minute
-        self.tab_refresh_timer = QTimer()
+        if not hasattr(self, 'tab_refresh_timer'):
+            self.tab_refresh_timer = QTimer()
+            print("[QTimer] Created: tab_refresh_timer")
         self.tab_refresh_timer.timeout.connect(self.refresh_current_tab)
         self.tab_refresh_timer.start(60000)  # 1 minute
+        print("[QTimer] Started: tab_refresh_timer")
 
     def load_combined_basic_stats(self):
         """Load all basic statistics in one combined request"""
@@ -2306,3 +2356,8 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
             # Even if cleanup fails, ensure critical resources are released
             self._data_cache = {}
             self.table_managers.clear()
+
+    def _remove_thread(self, thread):
+        if thread in self._active_threads:
+            print(f"[Thread] Finished and removed: {id(thread)}")
+            self._active_threads.discard(thread)

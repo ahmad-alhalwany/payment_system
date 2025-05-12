@@ -1,5 +1,5 @@
 from PyQt6.QtWidgets import (QTableWidget, QTableWidgetItem, QScrollBar, QWidget, 
-                          QVBoxLayout, QProgressDialog, QApplication)
+                          QVBoxLayout, QProgressDialog, QApplication, QLabel)
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QPoint, QObject, QThread
 from PyQt6.QtGui import QColor, QPainter, QPageSize
 from PyQt6.QtPrintSupport import QPrinter
@@ -434,6 +434,12 @@ class OptimizedTableManager(QObject):
         """Set new data for the table with improved performance"""
         self.loading_changed.emit(True)
         try:
+            # Show loading overlay if data is large
+            show_overlay = len(data) > 5000
+            if show_overlay:
+                self._show_loading_overlay()
+            if len(data) > 10000:
+                print(f"[TableManager] WARNING: Large table data ({len(data)} rows). This may affect performance.")
             self.full_data = data
             self.column_mapping = column_mapping
             self.visible_rows.clear()
@@ -455,6 +461,7 @@ class OptimizedTableManager(QObject):
             self.data_changed.emit()
             
         finally:
+            self._hide_loading_overlay()
             self.loading_changed.emit(False)
     
     def handle_scroll(self, value: int):
@@ -614,9 +621,22 @@ class OptimizedTableManager(QObject):
     def cleanup(self):
         """Clean up resources with improved memory management"""
         try:
+            print(f"[TableManager] cleanup called for table: {id(self.table)}")
+            # Stop any running search or export threads
+            if hasattr(self, 'search_worker') and self.search_worker.isRunning():
+                print(f"[TableManager] Stopping search_worker thread: {id(self.search_worker)}")
+                self.search_worker.stop()
+                self.search_worker.wait()
+            if hasattr(self, 'export_worker') and self.export_worker.isRunning():
+                print(f"[TableManager] Stopping export_worker thread: {id(self.export_worker)}")
+                self.export_worker.terminate()
+                self.export_worker.wait()
+            if hasattr(self, 'pdf_worker') and self.pdf_worker.isRunning():
+                print(f"[TableManager] Stopping pdf_worker thread: {id(self.pdf_worker)}")
+                self.pdf_worker.terminate()
+                self.pdf_worker.wait()
             if self.update_timer and self.update_timer.isActive():
                 self.update_timer.stop()
-            
             # Clear all data structures
             self.table = None
             self.update_queue.clear()
@@ -624,12 +644,10 @@ class OptimizedTableManager(QObject):
             self.full_data.clear()
             self.pending_updates.clear()
             self.cache.clear()
-            
             # Remove instance from class dictionary
             for key, value in list(self._instances.items()):
                 if value is self:
                     del self._instances[key]
-            
         except Exception as e:
             print(f"Error during cleanup: {e}")
     
@@ -1038,3 +1056,49 @@ class OptimizedTableManager(QObject):
                 
             except (ValueError, TypeError):
                 continue 
+
+    def clear_table(self):
+        """Clear all data and rows from the table widget manually."""
+        print(f"[TableManager] clear_table called for table: {id(self.table)}")
+        if self.table:
+            self.table.setRowCount(0)
+        self.full_data.clear()
+        self.visible_rows.clear()
+        self.cache.clear() 
+
+    def _show_loading_overlay(self):
+        if hasattr(self, '_loading_overlay') and self._loading_overlay:
+            self._loading_overlay.show()
+            self._loading_overlay.raise_()
+            return
+        overlay = QLabel(self.table)
+        overlay.setText("جاري تحميل البيانات...")
+        overlay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        overlay.setStyleSheet("""
+            QLabel {
+                background-color: rgba(255, 255, 255, 0.85);
+                color: #2c3e50;
+                font-size: 20px;
+                font-weight: bold;
+                border-radius: 10px;
+                padding: 30px;
+            }
+        """)
+        overlay.setGeometry(0, 0, self.table.width(), self.table.height())
+        overlay.show()
+        overlay.raise_()
+        self._loading_overlay = overlay
+        # Ensure overlay resizes with table
+        self.table.resizeEvent = self._make_overlay_resize_event(self.table.resizeEvent)
+
+    def _hide_loading_overlay(self):
+        if hasattr(self, '_loading_overlay') and self._loading_overlay:
+            self._loading_overlay.hide()
+
+    def _make_overlay_resize_event(self, original_resize_event):
+        def new_resize_event(event):
+            if hasattr(self, '_loading_overlay') and self._loading_overlay:
+                self._loading_overlay.setGeometry(0, 0, self.table.width(), self.table.height())
+            if original_resize_event:
+                original_resize_event(event)
+        return new_resize_event 
