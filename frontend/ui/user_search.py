@@ -146,6 +146,10 @@ class UserSearchDialog(QDialog):
             'auth': "انتهت صلاحية الجلسة. الرجاء تسجيل الدخول مرة أخرى.",
             'not_found': "لم يتم العثور على المورد المطلوب"
         }
+        # متغيرات pagination للحوالات
+        self.current_page_transfers = 1
+        self.total_pages_transfers = 1
+        self.per_page_transfers = 20
         
         self.setWindowTitle("بحث المستخدمين والتحويلات")
         self.setGeometry(100, 100, 1000, 700)
@@ -459,6 +463,17 @@ class UserSearchDialog(QDialog):
         self.transfers_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         
         results_layout.addWidget(self.transfers_table)
+        # أزرار pagination
+        pagination_layout = QHBoxLayout()
+        self.prev_button_transfers = ModernButton("السابق", color="#3498db")
+        self.prev_button_transfers.clicked.connect(self.prev_page_transfers)
+        pagination_layout.addWidget(self.prev_button_transfers)
+        self.page_label_transfers = QLabel("الصفحة: 1")
+        pagination_layout.addWidget(self.page_label_transfers)
+        self.next_button_transfers = ModernButton("التالي", color="#3498db")
+        self.next_button_transfers.clicked.connect(self.next_page_transfers)
+        pagination_layout.addWidget(self.next_button_transfers)
+        results_layout.addLayout(pagination_layout)
         results_group.setLayout(results_layout)
         layout.addWidget(results_group)
         
@@ -683,18 +698,26 @@ class UserSearchDialog(QDialog):
         elif search_type == "date" and search_term:
             params["date"] = search_term
 
+        # أضف pagination
+        params["page"] = self.current_page_transfers
+        params["per_page"] = self.per_page_transfers
+
         try:
             headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
             response = requests.get(f"{self.api_url}/transactions/", params=params, headers=headers, timeout=10)
             if response.status_code == 200:
                 transactions_data = response.json()
-                transactions = transactions_data.get("transactions", [])
+                transactions = transactions_data.get("items", [])
+                self.total_pages_transfers = transactions_data.get("total_pages", 1)
+                self.current_page_transfers = transactions_data.get("page", 1)
+                self.page_label_transfers.setText(f"الصفحة: {self.current_page_transfers}/{self.total_pages_transfers}")
+                self.prev_button_transfers.setEnabled(self.current_page_transfers > 1)
+                self.next_button_transfers.setEnabled(self.current_page_transfers < self.total_pages_transfers)
                 if not transactions:
                     QMessageBox.information(self, "نتائج البحث", "لم يتم العثور على تحويلات مطابقة لمعايير البحث")
+                    self.transfers_table.setRowCount(0)
                     return
                 self._fill_transfers_table(transactions)
-                # تحديث الكاش
-                self.cache_manager.set_transfers(cache_key, transactions)
             elif response.status_code == 401:
                 self.show_error('auth')
             elif response.status_code == 404:
@@ -1033,3 +1056,13 @@ class UserSearchDialog(QDialog):
         except Exception as e:
             print(f"Error during cleanup: {e}")
             event.accept()
+
+    def next_page_transfers(self):
+        if self.current_page_transfers < self.total_pages_transfers:
+            self.current_page_transfers += 1
+            self.search_transfers()
+
+    def prev_page_transfers(self):
+        if self.current_page_transfers > 1:
+            self.current_page_transfers -= 1
+            self.search_transfers()
