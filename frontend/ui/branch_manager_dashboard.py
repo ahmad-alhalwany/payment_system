@@ -64,9 +64,6 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
         self.full_name = full_name
         self.api_url = os.environ["API_URL"]
         self.branch_id_to_name = {}
-        self.current_page = 1
-        self.total_pages = 1
-        self.per_page = 8
         self.report_per_page = 14
         self.report_current_page = 1
         self.report_total_pages = 1
@@ -85,21 +82,18 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
         self._last_employee_stats = 0
         self._last_branches_update = 0
         self._last_profits_update = 0
-        self._last_transactions_update = 0
         
         # Cache storage
         self._branches_cache = None
         self._financial_cache = None
         self._employee_stats_cache = None
         self._profits_cache = None
-        self._transactions_cache = None
         
         # Cache duration in seconds
         self.FINANCIAL_CACHE_DURATION = 30  # 30 seconds for financial data
         self.EMPLOYEE_CACHE_DURATION = 300  # 5 minutes for employee stats
         self.BRANCHES_CACHE_DURATION = 300  # 5 minutes for branches data
         self.PROFITS_CACHE_DURATION = 300   # 5 minutes for profits data
-        self.TRANSACTIONS_CACHE_DURATION = 60  # 1 minute for transactions
         
         # Request tracking
         self._pending_requests = set()
@@ -170,10 +164,6 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
             # Load initial profits data using ProfitsTabMixin's method
             if hasattr(self, 'load_profits_data'):
                 self.load_profits_data()
-            
-            # Load initial transactions
-            self.load_transactions(branch_id=self.branch_id)
-            self.load_transactions(destination_branch_id=self.branch_id)
             
             # Mark initialization as complete
             self._is_initializing = False
@@ -611,7 +601,6 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
     
     def setup_transfers_tab(self):
         layout = QVBoxLayout()
-        
         self.money_transfer = MoneyTransferApp(
             user_token=self.token,
             branch_id=self.branch_id,
@@ -622,9 +611,8 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
         )
         self.money_transfer.transferCompleted.connect(self.load_financial_status)
         layout.addWidget(self.money_transfer)
-        
-        self.transfers_tab.setLayout(layout)        
-        
+        self.transfers_tab.setLayout(layout)
+
     def setup_transfers_report_tab(self, tab):
         """Set up the transfers report tab with advanced filters and table."""
         layout = QVBoxLayout(tab)
@@ -712,21 +700,6 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
             }
         """)
         
-        # Pagination Controls
-        pagination_layout = QHBoxLayout()
-        self.prev_report_btn = ModernButton("السابق", color="#3498db")
-        self.prev_report_btn.clicked.connect(self.prev_report_page)
-        pagination_layout.addWidget(self.prev_report_btn)
-        
-        self.report_page_label = QLabel("الصفحة: 1")
-        pagination_layout.addWidget(self.report_page_label)
-        
-        self.next_report_btn = ModernButton("التالي", color="#3498db")
-        self.next_report_btn.clicked.connect(self.next_report_page)
-        pagination_layout.addWidget(self.next_report_btn)
-        
-        layout.addWidget(self.transfer_report_table)
-        layout.addLayout(pagination_layout)
         
     def create_calendar_button(self, date_edit):
         """Create a calendar picker button for date input"""
@@ -905,12 +878,6 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
             self.report_current_page += 1
             self.generate_transfer_report()
 
-    def update_pagination_controls(self):
-        """Update report pagination controls."""
-        self.report_page_label.setText(f"الصفحة: {self.report_current_page}/{self.report_total_pages}")
-        self.prev_report_btn.setEnabled(self.report_current_page > 1)
-        self.next_report_btn.setEnabled(self.report_current_page < self.report_total_pages)
-    
     def setup_settings_tab(self):
         """Set up the settings tab."""
         layout = QVBoxLayout()
@@ -1776,40 +1743,6 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
             print(f"Error loading profits data: {e}")
             return None
 
-    def load_transactions(self, branch_id=None, destination_branch_id=None):
-        """Load transactions with caching"""
-        try:
-            current_time = time.time()
-            cache_key = f"transactions_{branch_id}_{destination_branch_id}"
-            
-            # Check cache first
-            if (hasattr(self, f"_{cache_key}_cache") and 
-                current_time - getattr(self, f"_last_{cache_key}_update", 0) < self.TRANSACTIONS_CACHE_DURATION):
-                return getattr(self, f"_{cache_key}_cache")
-            
-            # Make request with caching
-            params = {}
-            if branch_id:
-                params["branch_id"] = branch_id
-            if destination_branch_id:
-                params["destination_branch_id"] = destination_branch_id
-            
-            data = self.make_request(
-                f"{self.api_url}/transactions/",
-                params=params,
-                cache_duration=self.TRANSACTIONS_CACHE_DURATION,
-                cache_key=f"_{cache_key}_cache"
-            )
-            
-            if data:
-                setattr(self, f"_{cache_key}_cache", data)
-                setattr(self, f"_last_{cache_key}_update", current_time)
-                return data
-                
-        except Exception as e:
-            print(f"Error loading transactions: {e}")
-            return None
-
     def clear_cache(self, cache_type=None):
         """Clear specific or all cache"""
         if cache_type:
@@ -1823,12 +1756,10 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
             self._financial_cache = None
             self._employee_stats_cache = None
             self._profits_cache = None
-            self._transactions_cache = None
             self._last_branches_update = 0
             self._last_financial_update = 0
             self._last_employee_stats = 0
             self._last_profits_update = 0
-            self._last_transactions_update = 0
 
 class QDateEditCalendarPopup(QDialog):
     def __init__(self, parent=None):
