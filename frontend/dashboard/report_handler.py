@@ -396,6 +396,8 @@ class ReportHandlerMixin:
         elif report_type == "employees":
             if branch_id:
                 params["branch_id"] = branch_id
+            params["per_page"] = 10000
+            params["page"] = 1
             url = f"{self.api_url}/users/"
         else:
             self.show_error("نوع التقرير غير مدعوم")
@@ -425,7 +427,7 @@ class ReportHandlerMixin:
                     "count": stats.get("count", 0)
                 })
         elif report_type == "employees":
-            items = data.get("users", [])
+            items = data.get("items", data.get("users", []))
         elif report_type == "daily":
             items = []
             daily_report = data.get("daily_report", {})

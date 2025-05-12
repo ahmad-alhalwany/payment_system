@@ -699,7 +699,7 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
                 color: white;
             }
         """)
-        
+        layout.addWidget(self.transfer_report_table)
         
     def create_calendar_button(self, date_edit):
         """Create a calendar picker button for date input"""
@@ -1760,6 +1760,9 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
             self._last_financial_update = 0
             self._last_employee_stats = 0
             self._last_profits_update = 0
+
+    def update_pagination_controls(self):
+        pass
 
 class QDateEditCalendarPopup(QDialog):
     def __init__(self, parent=None):
