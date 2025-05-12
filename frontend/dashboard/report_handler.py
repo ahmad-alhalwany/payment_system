@@ -385,6 +385,7 @@ class ReportHandlerMixin:
             params["end_date"] = end_date
             if branch_id:
                 params["branch_id"] = branch_id
+            params["per_page"] = 10000  # جلب كل النتائج دفعة واحدة
             url = f"{self.api_url}/transactions/"
         elif report_type == "branch":
             params["start_date"] = start_date
@@ -410,7 +411,7 @@ class ReportHandlerMixin:
 
     def _on_report_data_ready(self, data, report_type):
         if report_type == "transactions":
-            items = data.get("transactions", [])
+            items = data.get("items", [])
         elif report_type == "branch":
             items = []
             branch_report = data.get("branch_report", {})

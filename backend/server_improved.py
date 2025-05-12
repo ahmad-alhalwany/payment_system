@@ -1321,6 +1321,8 @@ def get_transactions(
     receiver: Optional[str] = None,
     status: Optional[str] = None,
     date: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
     page: int = 1,
     per_page: int = 20
 ):
@@ -1365,6 +1367,21 @@ def get_transactions(
         query = query.filter(Transaction.status == status)
     if date:
         query = query.filter(Transaction.date.ilike(f"%{date}%"))
+    # إضافة فلترة التاريخ بدقة
+    from datetime import datetime
+    if start_date:
+        try:
+            start = datetime.strptime(start_date, "%Y-%m-%d")
+            query = query.filter(Transaction.date >= start)
+        except ValueError:
+            pass
+    if end_date:
+        try:
+            end = datetime.strptime(end_date, "%Y-%m-%d")
+            end = end.replace(hour=23, minute=59, second=59)
+            query = query.filter(Transaction.date <= end)
+        except ValueError:
+            pass
 
     # Apply type filter if specified
     if filter_type:
