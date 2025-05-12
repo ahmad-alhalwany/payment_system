@@ -1117,10 +1117,8 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
         """Load transactions data with pagination and matching recent transactions style"""
         try:
             headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
-            
             url = f"{self.api_url}/transactions/"
             params = {}
-            
             # Handle branch filtering
             if branch_id and isinstance(branch_id, (int, str)) and branch_id != self.api_url:
                 try:
@@ -1129,29 +1127,21 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
                     params["branch_id"] = branch_id
                 except:
                     print(f"Invalid branch_id: {branch_id}")
-            
             # Handle filter type
             if filter_type != "all":
                 params["filter_type"] = filter_type
-                
             # Handle status filtering
             if status and status != "all":
                 params["status"] = status
-            
-            # Fetch all transactions
+            # Pagination
+            params["page"] = self.current_page_transactions
+            params["per_page"] = self.transactions_per_page
             response = requests.get(url, headers=headers, params=params)
-            
             if response.status_code == 200:
                 data = response.json()
-                all_transactions = data.get("transactions", [])
-                
-                # Setup pagination
-                self.transactions_per_page = 15
-                self.total_pages_transactions = (len(all_transactions) + self.transactions_per_page - 1) // self.transactions_per_page
-                start_index = (self.current_page_transactions - 1) * self.transactions_per_page
-                end_index = start_index + self.transactions_per_page
-                transactions = all_transactions[start_index:end_index]
-
+                transactions = data.get("items", [])
+                self.total_pages_transactions = data.get("total_pages", 1)
+                self.current_page_transactions = data.get("page", 1)
                 # إعداد هيكل الجدول
                 self.transactions_table.setColumnCount(10)
                 self.transactions_table.setHorizontalHeaderLabels([
@@ -1159,7 +1149,6 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
                     "التاريخ", "الحالة", "الفرع المرسل", "الفرع المستلم", "اسم الموظف"
                 ])
                 self.transactions_table.setRowCount(len(transactions))
-
                 # تحميل أسماء الفروع إذا لم تكن محملة
                 if not hasattr(self, 'branch_id_to_name'):
                     self.branch_id_to_name = {}
@@ -1167,24 +1156,20 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
                     if branches_response.status_code == 200:
                         branches = branches_response.json().get("branches", [])
                         self.branch_id_to_name = {b["id"]: b["name"] for b in branches}
-
                 # تعبئة الصفوف
                 for row, transaction in enumerate(transactions):
                     # نوع التحويل
                     type_item = self.create_transaction_type_item(transaction)
                     self.transactions_table.setItem(row, 0, type_item)
-
                     # رقم التحويل
                     trans_id = str(transaction.get("id", ""))
                     id_item = QTableWidgetItem(trans_id[:8] + "..." if len(trans_id) > 8 else trans_id)
                     id_item.setToolTip(trans_id)
                     self.transactions_table.setItem(row, 1, id_item)
-
                     # المرسل
                     self.transactions_table.setItem(row, 2, QTableWidgetItem(transaction.get("sender", "")))
                     # المستلم
                     self.transactions_table.setItem(row, 3, QTableWidgetItem(transaction.get("receiver", "")))
-
                     # المبلغ
                     amount = transaction.get("amount", 0)
                     currency = transaction.get("currency", "ليرة سورية")
@@ -1192,11 +1177,9 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
                     amount_item = QTableWidgetItem(formatted_amount)
                     amount_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                     self.transactions_table.setItem(row, 4, amount_item)
-
                     # التاريخ
                     date_str = transaction.get("date", "")
                     self.transactions_table.setItem(row, 5, QTableWidgetItem(date_str))
-
                     # الحالة
                     status = transaction.get("status", "").lower()
                     status_ar = get_status_arabic(status)
@@ -1204,7 +1187,6 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
                     status_item.setBackground(get_status_color(status))
                     status_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                     self.transactions_table.setItem(row, 6, status_item)
-
                     # الفروع
                     branch_id = transaction.get("branch_id")
                     dest_branch_id = transaction.get("destination_branch_id")
@@ -1212,18 +1194,13 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
                     self.transactions_table.setItem(row, 7, QTableWidgetItem(sending_branch))
                     receiving_branch = self.branch_id_to_name.get(dest_branch_id, f"الفرع {dest_branch_id}" if dest_branch_id else "غير معروف")
                     self.transactions_table.setItem(row, 8, QTableWidgetItem(receiving_branch))
-
                     # اسم الموظف
                     self.transactions_table.setItem(row, 9, QTableWidgetItem(transaction.get("employee_name", "")))
-
                     # تخزين بيانات التحويل في أول عمود
                     self.transactions_table.item(row, 0).setData(Qt.ItemDataRole.UserRole, transaction)
-
                 self.update_trans_pagination_controls()
-                
             else:
                 QMessageBox.warning(self, "خطأ", f"فشل تحميل التحويلات: رمز الحالة {response.status_code}")
-        
         except Exception as e:
             print(f"Error loading transactions: {e}")
             QMessageBox.warning(self, "خطأ", f"تعذر تحميل التحويلات: {str(e)}")
