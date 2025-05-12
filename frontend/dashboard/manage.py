@@ -475,20 +475,17 @@ class DataLoadThread(QThread):
     def load_transactions(self, headers: dict) -> None:
         """Load transactions with progress tracking"""
         operation_start = time.time()
-        
         cached_transactions = self.cache_manager.get('transactions', 'high')
         if cached_transactions:
             self.data_loaded.emit({"transactions": cached_transactions})
             return
-
         self._update_progress("تحميل التحويلات", 50)
-        response = self.make_request(f"{self.api_url}/transactions/", headers)
-        
+        url = f"{self.api_url}/transactions/?per_page=10000"
+        response = self.make_request(url, headers)
         if response and response.status_code == 200:
-            transactions = response.json().get("transactions", [])
+            transactions = response.json().get("items", [])
             self.cache_manager.set('transactions', transactions)
             self.data_loaded.emit({"transactions": transactions})
-            
         self._track_memory('load_transactions')
         self._log_performance('load_transactions', operation_start)
         
