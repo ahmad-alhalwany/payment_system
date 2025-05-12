@@ -930,9 +930,9 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
         # Transactions table
         self.transactions_table = QTableWidget()
         manager = self._get_table_manager(self.transactions_table)
-        self.transactions_table.setColumnCount(8)
+        self.transactions_table.setColumnCount(10)
         self.transactions_table.setHorizontalHeaderLabels([
-            "رقم التحويل", "المرسل", "المستلم", "المبلغ", 
+            "نوع التحويل", "رقم التحويل", "المرسل", "المستلم", "المبلغ", 
             "التاريخ", "الحالة", "الفرع المرسل", "الفرع المستلم", "اسم الموظف"
         ])
         self.transactions_table.horizontalHeader().setStretchLastSection(True)
@@ -1151,89 +1151,74 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
                 start_index = (self.current_page_transactions - 1) * self.transactions_per_page
                 end_index = start_index + self.transactions_per_page
                 transactions = all_transactions[start_index:end_index]
-                
-                # Initialize table structure
-                self.transactions_table.setColumnCount(8)
+
+                # إعداد هيكل الجدول
+                self.transactions_table.setColumnCount(10)
                 self.transactions_table.setHorizontalHeaderLabels([
-                    "رقم التحويل", "المرسل", "المستلم", "المبلغ", 
+                    "نوع التحويل", "رقم التحويل", "المرسل", "المستلم", "المبلغ", 
                     "التاريخ", "الحالة", "الفرع المرسل", "الفرع المستلم", "اسم الموظف"
                 ])
                 self.transactions_table.setRowCount(len(transactions))
-                
-                # Load branch names if not cached
+
+                # تحميل أسماء الفروع إذا لم تكن محملة
                 if not hasattr(self, 'branch_id_to_name'):
                     self.branch_id_to_name = {}
                     branches_response = self.api_client.get_branches()
                     if branches_response.status_code == 200:
                         branches = branches_response.json().get("branches", [])
                         self.branch_id_to_name = {b["id"]: b["name"] for b in branches}
-                
-                # Populate table rows
+
+                # تعبئة الصفوف
                 for row, transaction in enumerate(transactions):
-                    # Transaction Type
+                    # نوع التحويل
                     type_item = self.create_transaction_type_item(transaction)
                     self.transactions_table.setItem(row, 0, type_item)
-                    
-                    # Transaction ID
+
+                    # رقم التحويل
                     trans_id = str(transaction.get("id", ""))
                     id_item = QTableWidgetItem(trans_id[:8] + "..." if len(trans_id) > 8 else trans_id)
                     id_item.setToolTip(trans_id)
                     self.transactions_table.setItem(row, 1, id_item)
-                    
-                    # Sender/Receiver
+
+                    # المرسل
                     self.transactions_table.setItem(row, 2, QTableWidgetItem(transaction.get("sender", "")))
+                    # المستلم
                     self.transactions_table.setItem(row, 3, QTableWidgetItem(transaction.get("receiver", "")))
-                    
-                    # Amount with proper currency formatting
+
+                    # المبلغ
                     amount = transaction.get("amount", 0)
                     currency = transaction.get("currency", "ليرة سورية")
                     formatted_amount = format_currency(amount, currency)
                     amount_item = QTableWidgetItem(formatted_amount)
                     amount_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                     self.transactions_table.setItem(row, 4, amount_item)
-                    
-                    # Date
+
+                    # التاريخ
                     date_str = transaction.get("date", "")
                     self.transactions_table.setItem(row, 5, QTableWidgetItem(date_str))
-                    
-                    # Status
+
+                    # الحالة
                     status = transaction.get("status", "").lower()
                     status_ar = get_status_arabic(status)
                     status_item = QTableWidgetItem(status_ar)
                     status_item.setBackground(get_status_color(status))
                     status_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                     self.transactions_table.setItem(row, 6, status_item)
-                    
-                    # Branch information and directions
+
+                    # الفروع
                     branch_id = transaction.get("branch_id")
                     dest_branch_id = transaction.get("destination_branch_id")
-                    
-                    # Sending Branch
                     sending_branch = self.branch_id_to_name.get(branch_id, f"الفرع {branch_id}" if branch_id else "غير معروف")
                     self.transactions_table.setItem(row, 7, QTableWidgetItem(sending_branch))
-                    
-                    # Outgoing Direction
-                    outgoing_direction = QTableWidgetItem("↑" if branch_id else "")
-                    outgoing_direction.setForeground(QColor(0, 150, 0))
-                    outgoing_direction.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                    self.transactions_table.setItem(row, 8, outgoing_direction)
-                    
-                    # Receiving Branch
                     receiving_branch = self.branch_id_to_name.get(dest_branch_id, f"الفرع {dest_branch_id}" if dest_branch_id else "غير معروف")
-                    self.transactions_table.setItem(row, 9, QTableWidgetItem(receiving_branch))
-                    
-                    # Incoming Direction
-                    incoming_direction = QTableWidgetItem("↓" if dest_branch_id else "")
-                    incoming_direction.setForeground(QColor(150, 0, 0))
-                    incoming_direction.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                    self.transactions_table.setItem(row, 10, incoming_direction)
-                    
-                    # Employee
-                    self.transactions_table.setItem(row, 11, QTableWidgetItem(transaction.get("employee_name", "")))
-                    
-                    # Store transaction data
+                    self.transactions_table.setItem(row, 8, QTableWidgetItem(receiving_branch))
+
+                    # اسم الموظف
+                    self.transactions_table.setItem(row, 9, QTableWidgetItem(transaction.get("employee_name", "")))
+
+                    # تخزين بيانات التحويل في أول عمود
                     self.transactions_table.item(row, 0).setData(Qt.ItemDataRole.UserRole, transaction)
-                
+
                 self.update_trans_pagination_controls()
                 
             else:
