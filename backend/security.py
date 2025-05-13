@@ -8,8 +8,11 @@ from database import SessionLocal
 from models import User
 
 # Get secret key from environment variable with a fallback for development
-SECRET_KEY = os.getenv("SECRET_KEY", "929b15e43fd8f1cf4df79d86eb93ca426ab58ae53386c7a91ac4adb45832773b")
+SECRET_KEY = os.getenv(
+    "SECRET_KEY"
+)
 ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))  # 24 hours
 pwd_context = CryptContext(schemes=["sha256_crypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 

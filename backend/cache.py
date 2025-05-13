@@ -18,10 +18,12 @@ class Cache:
             # Use environment variables with fallback to default values
             redis_host = host or os.getenv('REDIS_HOST', 'localhost')
             redis_port = port or int(os.getenv('REDIS_PORT', 6379))
+            redis_password = os.getenv('REDIS_PASSWORD', None)
             
             self.redis_client = redis.Redis(
                 host=redis_host,
                 port=redis_port,
+                password=redis_password,
                 db=db,
                 decode_responses=True
             )

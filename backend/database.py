@@ -2,10 +2,17 @@ from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import text
+import os
+
+# Get database URL from environment variable with fallback
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "postgresql+psycopg2://postgres:postgres@localhost/postgres"
+)
 
 # SQLAlchemy setup
 engine = create_engine(
-    "postgresql+psycopg2://postgres:postgres@localhost/postgres",
+    DATABASE_URL,
     pool_size=10,
     max_overflow=20,
     pool_timeout=30,
