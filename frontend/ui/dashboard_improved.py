@@ -43,6 +43,10 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
     def __init__(self, token=None, full_name="مدير النظام"):
         """Initialize the dashboard with proper order"""
         super().__init__()
+        
+        # Set window icon
+        self.setWindowIcon(QIcon("payment-system.ico"))
+        
         BranchManagementMixin.__init__(self)
         EmployeeManagementMixin.__init__(self)
         DashboardUtilsMixin.__init__(self)

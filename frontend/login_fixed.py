@@ -144,6 +144,7 @@ class LoginWindow(QDialog):
         
         self.setWindowTitle("تسجيل الدخول")
         self.setGeometry(200, 200, 450, 500)
+        self.setWindowIcon(QIcon("payment-system.ico"))
         self.setup_ui()
         self.setup_styles()
         

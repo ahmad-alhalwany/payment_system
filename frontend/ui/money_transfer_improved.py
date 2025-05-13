@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
     QTableView, QMainWindow, QDateEdit, QDoubleSpinBox, QTextEdit
 )
 import os
-from PyQt6.QtGui import QFont, QColor, QAction
+from PyQt6.QtGui import QFont, QColor, QAction, QIcon
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QDate, QAbstractTableModel, QModelIndex, QThread
 from datetime import datetime
 from ui.user_search import UserSearchDialog
@@ -321,6 +321,11 @@ class MoneyTransferApp(QMainWindow, ReceiptPrinter, TransferCore, MenuAuthMixin)
     
     def __init__(self, user_token=None, branch_id=None, user_id=None, user_role="employee", username=None, full_name=None):
         super().__init__()
+        
+        # Set window icon
+        self.setWindowIcon(QIcon("payment-system.ico"))
+        
+        # Initialize properties
         self.user_token = user_token
         self.branch_id = branch_id
         self.user_id = user_id

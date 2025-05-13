@@ -9,7 +9,8 @@ from models import User
 
 # Get secret key from environment variable with a fallback for development
 SECRET_KEY = os.getenv(
-    "SECRET_KEY"
+    "SECRET_KEY",
+    "929b15e43fd8f1cf4df79d86eb93ca426ab58ae53386c7a91ac4adb45832773b"
 )
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))  # 24 hours

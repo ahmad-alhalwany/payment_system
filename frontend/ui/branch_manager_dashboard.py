@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
 )
 from ui.change_password import ChangePasswordDialog
 from datetime import datetime, timedelta
-from PyQt6.QtGui import QFont, QColor
+from PyQt6.QtGui import QFont, QColor, QIcon
 from PyQt6.QtCore import Qt, QTimer, QDate, QThread, pyqtSignal
 import os
 from ui.money_transfer_improved import MoneyTransferApp
@@ -57,6 +57,10 @@ class BranchManagerDashboard(QMainWindow, MenuAuthMixin, EmployeesTabMixin, Repo
     
     def __init__(self, branch_id, token=None, user_id=None, username=None, full_name=None):
         super().__init__()
+        
+        # Set window icon
+        self.setWindowIcon(QIcon("payment-system.ico"))
+        
         self.branch_id = branch_id
         self.token = token
         self.user_id = user_id
