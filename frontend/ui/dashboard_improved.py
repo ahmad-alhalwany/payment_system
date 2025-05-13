@@ -1912,11 +1912,11 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
 
     def on_tab_changed(self, index):
         """Handle tab change and load necessary data"""
+        # إلغاء أي تحميل بيانات نشط عند تبديل التبويب
+        self.cancel_active_load_thread()
         if index == self._current_tab:
             return
-            
         self._current_tab = index
-        
         # Load tab specific data
         if index == 0:  # Dashboard
             self.load_dashboard_details()
@@ -2361,3 +2361,15 @@ class DirectorDashboard(QMainWindow, BranchAllocationMixin, MenuAuthMixin, Recei
         if thread in self._active_threads:
             print(f"[Thread] Finished and removed: {id(thread)}")
             self._active_threads.discard(thread)
+
+    def cancel_active_load_thread(self):
+        """Cancel any active DataLoadThread and hide loading overlays in tables."""
+        # إيقاف أي خيط تحميل نشط
+        if hasattr(self, 'load_thread') and self.load_thread.isRunning():
+            print(f"[Thread] Cancelling active DataLoadThread: {id(self.load_thread)}")
+            self.load_thread.stop()
+            self.load_thread.wait()
+        # إخفاء overlay التحميل في كل جدول (إن وجد)
+        for manager in getattr(self, 'table_managers', {}).values():
+            if hasattr(manager, '_hide_loading_overlay'):
+                manager._hide_loading_overlay()

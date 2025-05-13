@@ -1,5 +1,5 @@
 from PyQt6.QtWidgets import (QTableWidget, QTableWidgetItem, QScrollBar, QWidget, 
-                          QVBoxLayout, QProgressDialog, QApplication, QLabel)
+                          QVBoxLayout, QProgressDialog, QApplication, QLabel, QPushButton)
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QPoint, QObject, QThread
 from PyQt6.QtGui import QColor, QPainter, QPageSize
 from PyQt6.QtPrintSupport import QPrinter
@@ -1071,20 +1071,49 @@ class OptimizedTableManager(QObject):
             self._loading_overlay.show()
             self._loading_overlay.raise_()
             return
-        overlay = QLabel(self.table)
-        overlay.setText("جاري تحميل البيانات...")
-        overlay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        overlay = QWidget(self.table)
         overlay.setStyleSheet("""
-            QLabel {
-                background-color: rgba(255, 255, 255, 0.85);
-                color: #2c3e50;
-                font-size: 20px;
-                font-weight: bold;
-                border-radius: 10px;
-                padding: 30px;
-            }
+            background-color: rgba(255, 255, 255, 0.85);
+            border-radius: 10px;
         """)
         overlay.setGeometry(0, 0, self.table.width(), self.table.height())
+
+        # رسالة التحميل
+        label = QLabel("جاري تحميل البيانات...", overlay)
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        label.setStyleSheet("color: #2c3e50; font-size: 20px; font-weight: bold; padding: 30px;")
+        label.setGeometry(0, 0, self.table.width(), self.table.height())
+
+        # زر الإلغاء
+        cancel_btn = QPushButton("إلغاء", overlay)
+        cancel_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #e74c3c;
+                color: white;
+                border: none;
+                border-radius: 6px;
+                padding: 6px 16px;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                background-color: #c0392b;
+            }
+        """)
+        cancel_btn.move(self.table.width() - 90, 15)
+        cancel_btn.show()
+
+        def handle_cancel():
+            # ابحث عن دالة on_cancel_loading في parent
+            parent = self.table.parent()
+            while parent is not None:
+                if hasattr(parent, 'on_cancel_loading'):
+                    parent.on_cancel_loading()
+                    break
+                parent = parent.parent() if hasattr(parent, 'parent') else None
+            self._hide_loading_overlay()
+
+        cancel_btn.clicked.connect(handle_cancel)
+
         overlay.show()
         overlay.raise_()
         self._loading_overlay = overlay
