@@ -6,3 +6,5 @@ python-multipart
 passlib
 python-jose[cryptography]==3.3.0
 cryptography==42.0.5  
+psycopg2
+python-dotenv
